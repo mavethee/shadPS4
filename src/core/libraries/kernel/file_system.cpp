@@ -3,6 +3,7 @@
 
 #include <map>
 #include <ranges>
+#include <thread>
 #include <magic_enum/magic_enum.hpp>
 
 #include "common/assert.h"

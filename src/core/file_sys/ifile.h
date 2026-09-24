@@ -60,6 +60,15 @@ public:
     virtual ~IFile() = default;
 
     virtual s64 Read(void* dst, u64 size) = 0;
+    virtual s64 Pread(void* dst, u64 size, s64 offset) {
+        const s64 pos = Tell();
+        if (!Seek(offset, Common::FS::SeekOrigin::SetOrigin)) {
+            return -1;
+        }
+        const s64 result = Read(dst, size);
+        Seek(pos, Common::FS::SeekOrigin::SetOrigin);
+        return result;
+    }
     virtual s64 Write(const void* src, u64 size) = 0;
     virtual bool Seek(s64 offset, Common::FS::SeekOrigin origin) = 0;
     virtual u64 Tell() const = 0;
