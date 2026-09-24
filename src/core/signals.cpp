@@ -19,6 +19,7 @@ static constexpr DWORD MS_VC_EXCEPTION = 0x406D1388;
 #include <pthread.h>
 #ifdef ARCH_X86_64
 #include <Zydis/Formatter.h>
+#include <Zydis/Zydis.h>
 #endif
 #endif
 
@@ -169,6 +170,8 @@ static std::string DisassembleInstruction(void* code_address) {
     return buffer;
 }
 
+
+
 static s32 NativeSiCodeToGuest(s32 sig, s32 code) {
     using namespace Libraries::Kernel;
     switch (sig) {
@@ -272,6 +275,29 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
             if (thread && thread->DispatchSignal(NativeToOrbisSignal(sig), info_p, context_p)) {
                 return;
             }
+#if defined(__APPLE__) && defined(ARCH_X86_64)
+            auto* mc = &((ucontext_t*)raw_context)->uc_mcontext->__ss;
+            LOG_CRITICAL(Debug, "Registers:\n"
+                                "RAX: {:#018x} RBX: {:#018x} RCX: {:#018x} RDX: {:#018x}\n"
+                                "RSI: {:#018x} RDI: {:#018x} RBP: {:#018x} RSP: {:#018x}\n"
+                                "R8:  {:#018x} R9:  {:#018x} R10: {:#018x} R11: {:#018x}\n"
+                                "R12: {:#018x} R13: {:#018x} R14: {:#018x} R15: {:#018x}",
+                         (u64)mc->__rax, (u64)mc->__rbx, (u64)mc->__rcx, (u64)mc->__rdx,
+                         (u64)mc->__rsi, (u64)mc->__rdi, (u64)mc->__rbp, (u64)mc->__rsp,
+                         (u64)mc->__r8, (u64)mc->__r9, (u64)mc->__r10, (u64)mc->__r11,
+                         (u64)mc->__r12, (u64)mc->__r13, (u64)mc->__r14, (u64)mc->__r15);
+            std::string st;
+            void** cur_rbp = (void**)mc->__rbp;
+            for (int i = 0; i < 24 && cur_rbp; ++i) {
+                uintptr_t rbp_val = (uintptr_t)cur_rbp;
+                if (rbp_val < 0x10000 || rbp_val > 0x7fffffffffff || (rbp_val & 0x7) != 0) break;
+                st += fmt::format(" [#{}: ret={:p}]", i, cur_rbp[1]);
+                cur_rbp = (void**)cur_rbp[0];
+            }
+            LOG_CRITICAL(Debug, "Crash callstack:{}", st);
+#endif
+            LOG_CRITICAL(Debug, "Instruction at {}: {}", fmt::ptr(code_address),
+                         DisassembleInstruction(code_address));
             UNREACHABLE_MSG("Unhandled access violation at code address {}: {} address {}",
                             fmt::ptr(code_address), is_write ? "Write to" : "Read from",
                             fmt::ptr(info->si_addr));

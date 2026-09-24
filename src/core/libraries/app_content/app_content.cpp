@@ -291,6 +291,10 @@ int PS4_SYSV_ABI sceAppContentInitialize(const OrbisAppContentInitParam* initPar
 
     LOG_WARNING(Lib_AppContent, "(DUMMY) called");
     is_initialized = true;
+    if (bootParam != nullptr) {
+        std::memset(bootParam, 0, sizeof(OrbisAppContentBootParam));
+        bootParam->attr = 0;
+    }
     auto* param_sfo = Common::Singleton<PSF>::Instance();
 
     const auto addons_dir = EmulatorSettings.GetAddonInstallDir();

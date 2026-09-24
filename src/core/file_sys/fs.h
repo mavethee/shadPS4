@@ -191,6 +191,7 @@ public:
 
     int CreateHandle();
     void DeleteHandle(int d);
+    File* DetachHandle(int d);
     File* GetFile(int d);
     File* GetSocket(int d);
     std::vector<int> GetSocketHandles();

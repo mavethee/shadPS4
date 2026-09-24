@@ -94,6 +94,21 @@ s32 PS4_SYSV_ABI open(const char* raw_path, s32 flags, u16 mode) {
         return -1;
     }
 
+    if (raw_path == nullptr || raw_path[0] == '\0') {
+        *__Error() = POSIX_ENOENT;
+        std::string stack_trace;
+        void** cur_rbp = (void**)__builtin_frame_address(0);
+        for (int i = 0; i < 24 && cur_rbp; ++i) {
+            uintptr_t rbp_val = (uintptr_t)cur_rbp;
+            if (rbp_val < 0x10000 || rbp_val > 0x7fffffffffff || (rbp_val & 0x7) != 0) break;
+            void* ret_addr = cur_rbp[1];
+            stack_trace += fmt::format(" [#{}: rbp={:p}, ret={:p}]", i, (void*)cur_rbp, ret_addr);
+            cur_rbp = (void**)cur_rbp[0];
+        }
+        LOG_WARNING(Kernel_Fs, "Opening path failed, path is empty:{}", stack_trace);
+        return -1;
+    }
+
     if (strlen(raw_path) > 255) {
         *__Error() = POSIX_ENAMETOOLONG;
         LOG_ERROR(Kernel_Fs, "Opening path {} failed, path is too long", raw_path);
@@ -269,9 +284,7 @@ s32 PS4_SYSV_ABI sceKernelOpen(const char* path, s32 flags, /* SceKernelMode*/ u
 }
 
 s32 PS4_SYSV_ABI close(s32 fd) {
-    auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
-    auto* file = h->GetFile(fd);
-    if (file == nullptr) {
+    if (fd < 0) {
         *__Error() = POSIX_EBADF;
         return -1;
     }
@@ -279,15 +292,23 @@ s32 PS4_SYSV_ABI close(s32 fd) {
         *__Error() = POSIX_EPERM;
         return -1;
     }
-    if (file->type == Core::FileSys::FileType::Regular) {
-        file->handle.reset();
-    } else if (file->type == Core::FileSys::FileType::Socket) {
-        file->socket->Close();
+    auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
+    auto* file = h->DetachHandle(fd);
+    if (file == nullptr) {
+        *__Error() = POSIX_EBADF;
+        return -1;
     }
-    file->is_opened = false;
-    LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
-    // FIXME: Lock file mutex before deleting it?
-    h->DeleteHandle(fd);
+    {
+        std::scoped_lock lk{file->m_mutex};
+        if (file->type == Core::FileSys::FileType::Regular) {
+            file->handle.reset();
+        } else if (file->type == Core::FileSys::FileType::Socket) {
+            file->socket->Close();
+        }
+        file->is_opened = false;
+        LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
+    }
+    delete file;
     return ORBIS_OK;
 }
 
@@ -313,6 +334,10 @@ s64 PS4_SYSV_ABI write(s32 fd, const void* buf, u64 nbytes) {
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->write(buf, nbytes);
         if (result < 0) {
@@ -371,6 +396,10 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->readv(iov, iovcnt);
         if (result < 0) {
@@ -421,6 +450,10 @@ s64 PS4_SYSV_ABI writev(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
 
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->writev(iov, iovcnt);
@@ -463,6 +496,10 @@ s64 PS4_SYSV_ABI posix_lseek(s32 fd, s64 offset, s32 whence) {
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->lseek(offset, whence);
         if (result < 0) {
@@ -533,6 +570,10 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->read(buf, nbytes);
         if (result < 0) {
@@ -996,6 +1037,10 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
     }
 
     std::scoped_lock lk{file->m_mutex};
+    if (!file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
     if (file->type == Core::FileSys::FileType::Device) {
         s64 result = file->device->preadv(iov, iovcnt, offset);
         if (result < 0) {

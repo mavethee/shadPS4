@@ -561,10 +561,22 @@ int HandleTable::CreateHandle() {
     return m_files.size() - 1;
 }
 
-void HandleTable::DeleteHandle(int d) {
+File* HandleTable::DetachHandle(int d) {
     std::scoped_lock lock{m_mutex};
-    delete m_files.at(d);
+    if (d < 0 || d >= m_files.size()) {
+        return nullptr;
+    }
+    File* file = m_files.at(d);
     m_files[d] = nullptr;
+    return file;
+}
+
+void HandleTable::DeleteHandle(int d) {
+    File* file = DetachHandle(d);
+    if (file) {
+        std::scoped_lock lock{file->m_mutex};
+        delete file;
+    }
 }
 
 File* HandleTable::GetFile(int d) {

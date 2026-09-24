@@ -1406,6 +1406,9 @@ if (NOT MSVC)
 endif()
 
 add_compile_definitions(BOOST_ASIO_STANDALONE)
+if (APPLE)
+    add_compile_definitions(_LIBCPP_ENABLE_EXPERIMENTAL)
+endif()
 
 target_include_directories(shadps4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
