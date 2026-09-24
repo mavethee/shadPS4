@@ -6,6 +6,7 @@
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include "common/string_util.h"
@@ -25,6 +26,78 @@ s64 HostFile::Read(void* dst, u64 size) {
         return -1;
     }
     return static_cast<s64>(m_file.ReadRaw<u8>(dst, size));
+}
+
+s64 HostFile::Pread(void* dst, u64 size, s64 offset) {
+    if (!m_file.IsOpen() || offset < 0) {
+        return -1;
+    }
+    if (size == 0) {
+        return 0;
+    }
+#if defined(__unix__) || defined(__APPLE__)
+    int fd = fileno(m_file.file);
+    if (fd < 0) {
+        return -1;
+    }
+    u8* ptr = reinterpret_cast<u8*>(dst);
+    u64 total = 0;
+    while (total < size) {
+        ssize_t n = ::pread(fd, ptr + total, size - total, static_cast<off_t>(offset + total));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (total > 0) {
+                break;
+            }
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        total += static_cast<u64>(n);
+    }
+    return static_cast<s64>(total);
+#elif defined(_WIN32)
+    HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(m_file.file)));
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    u8* ptr = reinterpret_cast<u8*>(dst);
+    u64 total = 0;
+    while (total < size) {
+        OVERLAPPED ov{};
+        u64 cur_offset = offset + total;
+        ov.Offset = static_cast<DWORD>(cur_offset & 0xFFFFFFFF);
+        ov.OffsetHigh = static_cast<DWORD>((cur_offset >> 32) & 0xFFFFFFFF);
+        DWORD to_read = static_cast<DWORD>(std::min<u64>(size - total, 0xFFFFFFFFULL));
+        DWORD bytes_read = 0;
+        if (!::ReadFile(h, ptr + total, to_read, &bytes_read, &ov)) {
+            DWORD err = ::GetLastError();
+            if (err == ERROR_HANDLE_EOF) {
+                break;
+            }
+            if (total > 0) {
+                break;
+            }
+            return -1;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        total += bytes_read;
+    }
+    return static_cast<s64>(total);
+#else
+    const s64 pos = Tell();
+    if (!Seek(offset, Common::FS::SeekOrigin::SetOrigin)) {
+        return -1;
+    }
+    const s64 result = Read(dst, size);
+    Seek(pos, Common::FS::SeekOrigin::SetOrigin);
+    return result;
+#endif
 }
 
 s64 HostFile::Write(const void* src, u64 size) {
@@ -52,6 +125,15 @@ u64 HostFile::Size() const {
     if (!m_file.IsOpen()) {
         return 0;
     }
+#if defined(__unix__) || defined(__APPLE__)
+    int fd = fileno(m_file.file);
+    if (fd >= 0) {
+        struct stat st{};
+        if (::fstat(fd, &st) == 0) {
+            return static_cast<u64>(st.st_size);
+        }
+    }
+#endif
     return m_file.GetSize();
 }
 

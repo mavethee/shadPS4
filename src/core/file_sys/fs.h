@@ -137,6 +137,7 @@ enum class FileType {
 struct File {
     std::atomic_bool is_opened{};
     std::atomic<FileType> type{FileType::Regular};
+    std::atomic<u32> active_readers{0};
     std::filesystem::path m_host_name;
     std::string m_guest_name;
     std::unique_ptr<IFile> handle;
@@ -153,6 +154,10 @@ struct File {
 
     s64 Read(void* dst, u64 size) {
         return handle ? handle->Read(dst, size) : -1;
+    }
+
+    s64 Pread(void* dst, u64 size, s64 offset) {
+        return handle ? handle->Pread(dst, size, offset) : -1;
     }
 
     s64 Write(const void* src, u64 size) {
