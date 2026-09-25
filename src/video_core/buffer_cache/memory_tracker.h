@@ -111,6 +111,9 @@ private:
         u64 page_index = cpu_address >> HIGHER_PAGE_BITS;
         u64 page_offset = cpu_address & HIGHER_PAGE_MASK;
         while (remaining_size > 0) {
+            if (page_index >= NUM_HIGH_PAGES) {
+                break;
+            }
             const u64 copy_amount = std::min(HIGHER_PAGE_SIZE - page_offset, remaining_size);
             if (auto* region = top_tier[page_index]; region) {
                 if constexpr (BOOL_BREAK) {
@@ -122,12 +125,14 @@ private:
                 }
             } else if constexpr (create_region_on_fail) {
                 region = CreateRegion(page_index);
-                if constexpr (BOOL_BREAK) {
-                    if (func(region, page_offset, copy_amount)) {
-                        return true;
+                if (region) {
+                    if constexpr (BOOL_BREAK) {
+                        if (func(region, page_offset, copy_amount)) {
+                            return true;
+                        }
+                    } else {
+                        func(region, page_offset, copy_amount);
                     }
-                } else {
-                    func(region, page_offset, copy_amount);
                 }
             }
             page_index++;
@@ -138,6 +143,9 @@ private:
     }
 
     RegionManager* CreateRegion(u64 page_index) {
+        if (page_index >= NUM_HIGH_PAGES) {
+            return nullptr;
+        }
         const VAddr base_cpu_addr = page_index << HIGHER_PAGE_BITS;
         if (free_managers.empty()) {
             manager_pool.emplace_back();

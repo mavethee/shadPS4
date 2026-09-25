@@ -156,16 +156,21 @@ struct VirtualMemoryArea {
     }
 
     void ForEachPhysArea(u64 offset, u64 size, auto&& func) {
-        if (size == 0) {
+        if (size == 0 || phys_areas.empty()) {
             return;
         }
         const u64 end = offset + size;
-        auto it = std::prev(phys_areas.upper_bound(offset));
+        auto it = phys_areas.upper_bound(offset);
+        if (it != phys_areas.begin()) {
+            --it;
+        }
         for (; it != phys_areas.end() && it->first < end; ++it) {
             const auto& pma = it->second;
             const u64 clip_start = std::max<u64>(it->first, offset);
             const u64 clip_end = std::min<u64>(it->first + pma.size, end);
-            func(pma.base + (clip_start - it->first), clip_end - clip_start);
+            if (clip_start < clip_end) {
+                func(pma.base + (clip_start - it->first), clip_end - clip_start);
+            }
         }
     }
 };

@@ -455,12 +455,20 @@ void BufferCache::FlushSyncBatch(bool from_scheduler) {
     while (true) {
         batch_start = batch_end;
         const auto& copy = copies[batch_start];
-        const auto* arena = address_space[copy.dstOffset >> ARENA_PAGE_BITS];
+        const u64 start_page = copy.dstOffset >> ARENA_PAGE_BITS;
+        const auto* arena = start_page < NUM_ARENA_PAGES ? address_space[start_page] : nullptr;
+        if (!arena) {
+            ++batch_end;
+            if (batch_end == copies.size()) {
+                break;
+            }
+            continue;
+        }
 
         const auto expand_batch = [&] {
             const auto& copy = copies[batch_end];
             const auto end_page = (copy.dstOffset + copy.size - 1) >> ARENA_PAGE_BITS;
-            return address_space[end_page] == arena;
+            return end_page < NUM_ARENA_PAGES && address_space[end_page] == arena;
         };
         const auto flush_batch = [&] {
             const auto regions = std::span{copies}.subspan(batch_start, batch_end - batch_start);
@@ -482,7 +490,8 @@ void BufferCache::FlushSyncBatch(bool from_scheduler) {
 
         // Next copy does not overlap with the current buffer.
         auto end_copy = copies[batch_end];
-        const auto* end_arena = address_space[end_copy.dstOffset >> ARENA_PAGE_BITS];
+        const u64 end_page = end_copy.dstOffset >> ARENA_PAGE_BITS;
+        const auto* end_arena = end_page < NUM_ARENA_PAGES ? address_space[end_page] : nullptr;
         if (end_arena != arena) {
             flush_batch();
             continue;

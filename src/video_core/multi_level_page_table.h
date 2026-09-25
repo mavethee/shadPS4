@@ -29,26 +29,30 @@ public:
 
     [[nodiscard]] Entry* find(size_t page) {
         const size_t l1_page = page >> L2_BITS;
-        const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
-        if (!top_level[l1_page]) [[unlikely]] {
+        if (l1_page >= top_level.size() || !top_level[l1_page]) [[unlikely]] {
             return nullptr;
         }
+        const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
         return &(*top_level[l1_page])[l2_page];
     }
 
     [[nodiscard]] const Entry* find(size_t page) const {
         const size_t l1_page = page >> L2_BITS;
-        const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
-        if (!top_level[l1_page]) [[unlikely]] {
+        if (l1_page >= top_level.size() || !top_level[l1_page]) [[unlikely]] {
             return nullptr;
         }
+        const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
         return &(*top_level[l1_page])[l2_page];
     }
 
     void reserve(size_t start_page, size_t end_page) {
         const size_t start_l1_page = start_page >> L2_BITS;
         const size_t end_l1_page = end_page >> L2_BITS;
-        for (size_t l1_page = start_l1_page; l1_page <= end_l1_page; ++l1_page) {
+        if (start_l1_page >= top_level.size()) {
+            return;
+        }
+        const size_t clamped_end = std::min(end_l1_page, top_level.size() - 1);
+        for (size_t l1_page = start_l1_page; l1_page <= clamped_end; ++l1_page) {
             if (!top_level[l1_page]) {
                 top_level[l1_page] = page_alloc.Create();
             }
@@ -57,6 +61,10 @@ public:
 
     [[nodiscard]] const Entry& operator[](size_t page) const {
         const size_t l1_page = page >> L2_BITS;
+        if (l1_page >= top_level.size()) [[unlikely]] {
+            static const Entry empty_entry{};
+            return empty_entry;
+        }
         const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
         if (NULL_CHECK && !top_level[l1_page]) [[unlikely]] {
             top_locks[l1_page].lock();
@@ -70,6 +78,10 @@ public:
 
     [[nodiscard]] Entry& operator[](size_t page) {
         const size_t l1_page = page >> L2_BITS;
+        if (l1_page >= top_level.size()) [[unlikely]] {
+            static Entry dummy{};
+            return dummy;
+        }
         const size_t l2_page = page & (NUM_L1_ENTRIES - 1);
         if (NULL_CHECK && !top_level[l1_page]) [[unlikely]] {
             top_locks[l1_page].lock();

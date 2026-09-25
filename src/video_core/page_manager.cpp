@@ -144,7 +144,10 @@ struct PageManager::Impl {
                 continue;
             }
 
-            locks[page].lock();
+            auto* lock = locks.find(page);
+            if (lock) {
+                lock->lock();
+            }
 
             const auto old_perms = state->Perms();
             if (page == page_start) {
@@ -209,7 +212,10 @@ struct PageManager::Impl {
                 continue;
             }
 
-            locks[base_page + page].lock();
+            auto* lock = locks.find(base_page + page);
+            if (lock) {
+                lock->lock();
+            }
 
             const auto old_perms = state->Perms();
             if (page == page_start) {

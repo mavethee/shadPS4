@@ -154,11 +154,15 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
         const u64 offset = virtual_addr - vma->first;
         const u64 copy_size = std::min<u64>(vma->second.size - (virtual_addr - vma->first), size);
         if (vma->second.IsMapped()) {
-            u8* out = dest;
-            vma->second.ForEachPhysArea(offset, copy_size, [&](PAddr paddr, u32 chunk_size) {
-                std::memcpy(out, impl.BackingBase() + paddr, chunk_size);
-                out += chunk_size;
-            });
+            if (vma->second.phys_areas.empty()) {
+                std::memcpy(dest, std::bit_cast<const u8*>(virtual_addr), copy_size);
+            } else {
+                u8* out = dest;
+                vma->second.ForEachPhysArea(offset, copy_size, [&](PAddr paddr, u32 chunk_size) {
+                    std::memcpy(out, impl.BackingBase() + paddr, chunk_size);
+                    out += chunk_size;
+                });
+            }
         } else {
             std::memset(dest, 0, copy_size);
         }
