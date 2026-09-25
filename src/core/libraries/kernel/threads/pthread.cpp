@@ -674,7 +674,7 @@ void InstallPthreadCancelSignalHandler() {
     action.sa_sigaction = HostPthreadCancelSignalHandler;
     // Async cancellation may terminate from this handler. Keep it on the normal guest stack
     // because NativeThread::Exit tears down the alternate fault stack.
-    action.sa_flags = SA_SIGINFO;
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
     sigfillset(&action.sa_mask);
     ASSERT_MSG(sigaction(HostPthreadCancelSignal(), &action, nullptr) == 0,
                "Failed to register pthread cancellation signal handler");

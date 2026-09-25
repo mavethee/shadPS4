@@ -169,9 +169,26 @@ public:
 
     template <typename T>
     size_t ReadRaw(void* data, size_t size) const {
-        u64 read = std::fread(data, sizeof(T), size, file);
-        ASSERT_MSG(std::ferror(file) == 0, "Failed to read file, error = {}", std::strerror(errno));
-        return read;
+        if (!IsOpen() || size == 0) {
+            return 0;
+        }
+        u8* ptr = reinterpret_cast<u8*>(data);
+        size_t total = 0;
+        while (total < size) {
+            size_t read = std::fread(ptr + total * sizeof(T), sizeof(T), size - total, file);
+            if (read == 0) {
+                if (std::ferror(file)) {
+                    if (errno == EINTR) {
+                        std::clearerr(file);
+                        continue;
+                    }
+                    ASSERT_MSG(false, "Failed to read file, error = {}", std::strerror(errno));
+                }
+                break;
+            }
+            total += read;
+        }
+        return total;
     }
 
     template <typename T>
