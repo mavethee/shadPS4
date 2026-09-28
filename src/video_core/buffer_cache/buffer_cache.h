@@ -6,11 +6,13 @@
 #include <deque>
 #include <boost/container/small_vector.hpp>
 
+#include "common/alignment.h"
 #include "common/interval_set.h"
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
+#include "video_core/buffer_cache/region_definitions.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 namespace AmdGpu {
@@ -70,7 +72,9 @@ public:
 
     /// Return true when a region has a pending synchronization request.
     [[nodiscard]] bool IsRegionInSyncBatch(VAddr addr, size_t size) const noexcept {
-        return sync_batch.Overlaps(addr, addr + size);
+        const u64 page_start = Common::AlignDown(addr, BYTES_PER_PAGE);
+        const u64 page_end = Common::AlignUp(addr + size, BYTES_PER_PAGE);
+        return sync_batch.Overlaps(page_start, page_end);
     }
 
     /// Returns minimum granularity of a sparse memory bind.
@@ -156,11 +160,13 @@ private:
     struct Backing : public Interval {
         vk::DeviceMemory memory;
         u64 offset;
+        u32 block_shift;
         constexpr bool CanMergeWith(const Backing& other) const noexcept {
-            return memory == other.memory && offset + (end - start) == other.offset;
+            return memory == other.memory &&
+                   offset + ((end - start) << block_shift) == other.offset;
         }
         constexpr Backing SubRange(u64 a, u64 b) const noexcept {
-            return {{a, b}, memory, offset + (a - start)};
+            return {{a, b}, memory, offset + ((a - start) << block_shift), block_shift};
         }
     };
     IntervalList<Backing> resident_ranges;

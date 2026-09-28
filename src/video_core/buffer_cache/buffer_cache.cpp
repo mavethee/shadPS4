@@ -313,6 +313,7 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         backing.end = range.end;
         backing.memory = device_memory;
         backing.offset = memory_offset;
+        backing.block_shift = block_shift;
         resident_ranges.Add(backing);
 
         LOG_INFO(Render, "Making range start={}, end={} resident", backing.start, backing.end);
