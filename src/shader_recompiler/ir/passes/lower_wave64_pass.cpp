@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <unordered_set>
 #include "common/logging/classes.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -16,23 +17,46 @@ static bool IsDivergentCondition(const IR::U1& condition) {
         return false;
     }
     const IR::Inst* const condition_inst = condition.Inst();
-    return IR::BreadthFirstSearch(condition_inst,
-                                  [](const IR::Inst* inst) -> std::optional<bool> {
-                                      switch (inst->GetOpcode()) {
-                                      case IR::Opcode::LaneId:
-                                          return true;
-                                      case IR::Opcode::GetAttributeU32:
-                                          if (inst->Arg(0).Attribute() ==
-                                              IR::Attribute::LocalInvocationId) {
-                                              return true;
-                                          }
-                                          break;
-                                      default:
-                                          break;
-                                      }
-                                      return std::nullopt;
-                                  })
+    return IR::BreadthFirstSearch(
+               condition_inst,
+               [](const IR::Inst* inst) -> std::optional<bool> {
+                   switch (inst->GetOpcode()) {
+                   case IR::Opcode::LaneId:
+                       return true;
+                   case IR::Opcode::GetAttributeU32:
+                       if (inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationId ||
+                           inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationIndex) {
+                           return true;
+                       }
+                       break;
+                   default:
+                       break;
+                   }
+                   return std::nullopt;
+               })
         .value_or(false);
+}
+
+static std::unordered_set<const IR::Block*> FindDivergentLoops(
+    const IR::AbstractSyntaxList& syntax_list) {
+    std::unordered_set<const IR::Block*> divergent_loops;
+    for (const IR::AbstractSyntaxNode& node : syntax_list) {
+        switch (node.type) {
+        case IR::AbstractSyntaxNode::Type::Repeat:
+            if (IsDivergentCondition(node.data.repeat.cond)) {
+                divergent_loops.emplace(node.data.repeat.merge);
+            }
+            break;
+        case IR::AbstractSyntaxNode::Type::Break:
+            if (IsDivergentCondition(node.data.break_node.cond)) {
+                divergent_loops.emplace(node.data.break_node.merge);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    return divergent_loops;
 }
 
 static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
@@ -43,10 +67,18 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
         bool divergent;
     };
 
+    struct LoopScope {
+        const IR::Block* merge;
+        bool divergent;
+    };
+
+    const auto divergent_loops = FindDivergentLoops(program.syntax_list);
+
     std::vector<IR::Block*> blocks;
     std::vector<ConditionalScope> conditionals;
-    std::vector<const IR::Block*> loops;
+    std::vector<LoopScope> loops;
     u32 divergence_depth{};
+    u32 loop_divergence_depth{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         switch (node.type) {
         case Type::If: {
@@ -60,17 +92,21 @@ static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
             divergence_depth -= static_cast<u32>(conditionals.back().divergent);
             conditionals.pop_back();
             break;
-        case Type::Loop:
-            loops.push_back(node.data.loop.merge);
+        case Type::Loop: {
+            const bool divergent = divergent_loops.contains(node.data.loop.merge);
+            loops.push_back({node.data.loop.merge, divergent});
+            loop_divergence_depth += static_cast<u32>(divergent);
             break;
+        }
         case Type::Repeat:
-            if (loops.empty() || loops.back() != node.data.repeat.merge) {
+            if (loops.empty() || loops.back().merge != node.data.repeat.merge) {
                 return {};
             }
+            loop_divergence_depth -= static_cast<u32>(loops.back().divergent);
             loops.pop_back();
             break;
         case Type::Block:
-            if (divergence_depth == 0 && loops.empty()) {
+            if (divergence_depth == 0 && loop_divergence_depth == 0) {
                 blocks.push_back(node.data.block);
             }
             break;
@@ -166,7 +202,8 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
             ir.WriteShared(32, mask_low, offset);
             ir.Barrier();
-            const IR::U64 mask = IR::U64{ir.LoadShared(64, false, offset)};
+            const IR::U64 mask =
+                IR::U64{ir.LoadShared(64, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {
