@@ -62,60 +62,40 @@ static std::unordered_set<const IR::Block*> FindDivergentLoops(
 static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
     using Type = IR::AbstractSyntaxNode::Type;
 
-    struct ConditionalScope {
-        const IR::Block* merge;
-        bool divergent;
-    };
-
-    struct LoopScope {
-        const IR::Block* merge;
-        bool divergent;
-    };
-
+    std::vector<IR::Block*> blocks;
+    u32 divergence_depth{};
+    std::unordered_set<const IR::Block*> divergence_end;
     const auto divergent_loops = FindDivergentLoops(program.syntax_list);
 
-    std::vector<IR::Block*> blocks;
-    std::vector<ConditionalScope> conditionals;
-    std::vector<LoopScope> loops;
-    u32 divergence_depth{};
-    u32 loop_divergence_depth{};
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
-        switch (node.type) {
-        case Type::If: {
-            const bool divergent = IsDivergentCondition(node.data.if_node.cond);
-            conditionals.push_back({node.data.if_node.merge, divergent});
-            divergence_depth += static_cast<u32>(divergent);
-            break;
-        }
-        case Type::EndIf:
-            ASSERT(!conditionals.empty() && conditionals.back().merge == node.data.end_if.merge);
-            divergence_depth -= static_cast<u32>(conditionals.back().divergent);
-            conditionals.pop_back();
-            break;
-        case Type::Loop: {
-            const bool divergent = divergent_loops.contains(node.data.loop.merge);
-            loops.push_back({node.data.loop.merge, divergent});
-            loop_divergence_depth += static_cast<u32>(divergent);
-            break;
-        }
-        case Type::Repeat:
-            if (loops.empty() || loops.back().merge != node.data.repeat.merge) {
-                return {};
+        if (node.type == Type::EndIf) {
+            if (divergence_end.contains(node.data.end_if.merge)) {
+                if (divergence_depth > 0) {
+                    --divergence_depth;
+                }
             }
-            loop_divergence_depth -= static_cast<u32>(loops.back().divergent);
-            loops.pop_back();
-            break;
-        case Type::Block:
-            if (divergence_depth == 0 && loop_divergence_depth == 0) {
-                blocks.push_back(node.data.block);
-            }
-            break;
-        default:
-            break;
+            continue;
         }
-    }
-    if (!conditionals.empty() || !loops.empty()) {
-        return {};
+        if (node.type == Type::If) {
+            if (IsDivergentCondition(node.data.if_node.cond)) {
+                ++divergence_depth;
+                divergence_end.emplace(node.data.if_node.merge);
+            }
+            continue;
+        }
+        if (node.type == Type::Loop && divergent_loops.contains(node.data.loop.merge)) {
+            ++divergence_depth;
+            continue;
+        }
+        if (node.type == Type::Repeat && divergent_loops.contains(node.data.repeat.merge)) {
+            if (divergence_depth > 0) {
+                --divergence_depth;
+            }
+            continue;
+        }
+        if (node.type == Type::Block && divergence_depth == 0) {
+            blocks.push_back(node.data.block);
+        }
     }
     return blocks;
 }
