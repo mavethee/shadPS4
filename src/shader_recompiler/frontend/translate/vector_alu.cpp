@@ -572,8 +572,8 @@ void Translator::V_CNDMASK_B32(const GcnInst& inst) {
     } else {
         mask = GetSrc64(inst.src[2]);
     }
-    const IR::Value result = ir.Select(ir.InverseBallot(mask), GetSrc<IR::F32>(inst.src[1]),
-                                       GetSrc<IR::F32>(inst.src[0]));
+    const IR::Value result = ir.Select(ir.InverseBallot(mask), GetSrc<IR::U32>(inst.src[1]),
+                                       GetSrc<IR::U32>(inst.src[0]));
     SetDst(inst.dst[0], IR::U32F32{result});
 }
 
@@ -902,7 +902,11 @@ void Translator::V_MIN_F16(const GcnInst& inst) {
 // VOP1
 
 void Translator::V_MOV(const GcnInst& inst) {
-    SetDst(inst.dst[0], GetSrc<IR::F32>(inst.src[0]));
+    if (inst.dst[0].output_modifier.clamp) {
+        SetDst(inst.dst[0], GetSrc<IR::F32>(inst.src[0]));
+    } else {
+        SetDst(inst.dst[0], GetSrc(inst.src[0]));
+    }
 }
 
 void Translator::V_CVT_I32_F64(const GcnInst& inst) {
