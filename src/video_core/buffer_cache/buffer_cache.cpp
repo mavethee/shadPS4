@@ -363,9 +363,13 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
             static constexpr u32 ZmaskUncompressed = 0xf;
             runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
             return true;
-        } else {
-            LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
         }
+        if (*type == TextureCache::MetaType::CMask) {
+            static constexpr u32 CmaskUncompressed = 0xffffffff;
+            runtime.FillBuffer(arena, arena->Offset(device_addr), size, CmaskUncompressed);
+            return true;
+        }
+        LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
     }
     const ImageId image_id = texture_cache.FindImageFromRange(device_addr, size);
     if (!image_id) {
