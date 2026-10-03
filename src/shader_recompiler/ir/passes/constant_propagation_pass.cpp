@@ -3,8 +3,10 @@
 
 #include <bit>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <type_traits>
+#include <boost/container/small_vector.hpp>
 #include "common/func_traits.h"
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/ir_emitter.h"
@@ -182,10 +184,222 @@ void FoldLogicalAnd(IR::Inst& inst) {
     }
 }
 
+void TryResolveTrivialPhi(IR::Inst* start_phi) {
+    boost::container::small_vector<IR::Inst*, 16> worklist;
+    worklist.push_back(start_phi);
+    while (!worklist.empty()) {
+        IR::Inst* phi = worklist.back();
+        worklist.pop_back();
+        if (phi->GetOpcode() != IR::Opcode::Phi) {
+            continue;
+        }
+        IR::Value same;
+        bool non_trivial = false;
+        for (size_t i = 0; i < phi->NumArgs(); ++i) {
+            const IR::Value op{phi->Arg(i)};
+            if (op == same || op == IR::Value{phi}) {
+                continue;
+            }
+            if (!same.IsEmpty()) {
+                non_trivial = true;
+                break;
+            }
+            same = op;
+        }
+        if (non_trivial || same.IsEmpty()) {
+            continue;
+        }
+        for (const auto& [user, operand] : phi->Uses()) {
+            if (user->GetOpcode() == IR::Opcode::Phi && user != phi) {
+                worklist.push_back(user);
+            }
+        }
+        phi->ReplaceUsesWithAndRemove(same);
+    }
+}
+
+struct RangeAndStride {
+    u32 stride{1};
+    u32 max_val{std::numeric_limits<u32>::max()};
+};
+
+RangeAndStride GetRangeAndStride(const IR::Value& val, u32 depth = 0) {
+    if (val.IsImmediate()) {
+        const u32 c = val.U32();
+        return {c, c};
+    }
+    if (depth >= 8) {
+        return {};
+    }
+    IR::Inst* const inst = val.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::ReadFirstLane:
+    case IR::Opcode::ReadLane:
+        return GetRangeAndStride(inst->Arg(0), depth + 1);
+    case IR::Opcode::IMul32: {
+        for (size_t idx : {0u, 1u}) {
+            if (inst->Arg(idx).IsImmediate()) {
+                const u32 c = inst->Arg(idx).U32();
+                if (c == 0) {
+                    return {0, 0};
+                }
+                const auto inner = GetRangeAndStride(inst->Arg(1 - idx), depth + 1);
+                const u64 max_prod = static_cast<u64>(inner.max_val) * c;
+                const u32 pow2_factor = c & (~c + 1u);
+                const u64 prod_stride = static_cast<u64>(inner.stride) * pow2_factor;
+                return {prod_stride <= (1u << 30) ? static_cast<u32>(prod_stride) : 1u,
+                        static_cast<u32>(std::min<u64>(max_prod, std::numeric_limits<u32>::max()))};
+            }
+        }
+        return {};
+    }
+    case IR::Opcode::ShiftLeftLogical32: {
+        if (inst->Arg(1).IsImmediate()) {
+            const u32 shift = inst->Arg(1).U32();
+            if (shift < 32) {
+                const auto inner = GetRangeAndStride(inst->Arg(0), depth + 1);
+                const u64 max_shifted = static_cast<u64>(inner.max_val) << shift;
+                return {inner.stride << shift, static_cast<u32>(std::min<u64>(
+                                                   max_shifted, std::numeric_limits<u32>::max()))};
+            }
+        }
+        return {};
+    }
+    case IR::Opcode::ShiftRightLogical32: {
+        if (inst->Arg(1).IsImmediate()) {
+            const u32 shift = inst->Arg(1).U32();
+            if (shift < 32) {
+                const auto inner = GetRangeAndStride(inst->Arg(0), depth + 1);
+                return {1, inner.max_val >> shift};
+            }
+        }
+        return {};
+    }
+    case IR::Opcode::BitFieldUExtract: {
+        if (inst->Arg(2).IsImmediate()) {
+            const u32 count = inst->Arg(2).U32();
+            if (count < 32) {
+                return {1, (1u << count) - 1u};
+            }
+        }
+        return {};
+    }
+    case IR::Opcode::BitwiseAnd32: {
+        for (size_t idx : {0u, 1u}) {
+            if (inst->Arg(idx).IsImmediate()) {
+                const u32 mask = inst->Arg(idx).U32();
+                const auto inner = GetRangeAndStride(inst->Arg(1 - idx), depth + 1);
+                const u32 low_bit = mask & (~mask + 1u);
+                const u32 s = std::gcd(inner.stride, low_bit);
+                return {s == 0 ? 1u : s, std::min(inner.max_val, mask)};
+            }
+        }
+        return {};
+    }
+    case IR::Opcode::SelectU32: {
+        const auto t = GetRangeAndStride(inst->Arg(1), depth + 1);
+        const auto f = GetRangeAndStride(inst->Arg(2), depth + 1);
+        const u32 s = std::gcd(t.stride, f.stride);
+        return {s == 0 ? 1u : s, std::max(t.max_val, f.max_val)};
+    }
+    case IR::Opcode::Phi: {
+        if (inst->NumArgs() == 2) {
+            for (size_t init_idx : {0u, 1u}) {
+                const IR::Value init_arg = inst->Arg(init_idx);
+                const IR::Value step_arg = inst->Arg(1 - init_idx);
+                if (init_arg.IsImmediate() && init_arg.U32() == 0 && !step_arg.IsImmediate()) {
+                    IR::Inst* const step_inst = step_arg.Inst();
+                    if (step_inst->GetOpcode() == IR::Opcode::IAdd32) {
+                        u32 inc = 0;
+                        if (step_inst->Arg(0) == IR::Value{inst} &&
+                            step_inst->Arg(1).IsImmediate()) {
+                            inc = step_inst->Arg(1).U32();
+                        } else if (step_inst->Arg(1) == IR::Value{inst} &&
+                                   step_inst->Arg(0).IsImmediate()) {
+                            inc = step_inst->Arg(0).U32();
+                        }
+                        if (inc > 0) {
+                            u32 bound = std::numeric_limits<u32>::max();
+                            for (const auto& [user, op] : step_inst->Uses()) {
+                                if (user->GetParent() != step_inst->GetParent() || op >= 2 ||
+                                    !user->Arg(1 - op).IsImmediate()) {
+                                    continue;
+                                }
+                                const u32 lim = user->Arg(1 - op).U32();
+                                if (lim < 2) {
+                                    continue;
+                                }
+                                const auto uop = user->GetOpcode();
+                                if (uop == IR::Opcode::ULessThan32 ||
+                                    uop == IR::Opcode::SLessThan32 ||
+                                    uop == IR::Opcode::UGreaterThanEqual32 ||
+                                    uop == IR::Opcode::SGreaterThanEqual32 ||
+                                    uop == IR::Opcode::IEqual32 || uop == IR::Opcode::INotEqual32) {
+                                    bound = std::min(bound, lim - 1u);
+                                } else if (uop == IR::Opcode::UGreaterThan32 ||
+                                           uop == IR::Opcode::SGreaterThan32 ||
+                                           uop == IR::Opcode::ULessThanEqual32 ||
+                                           uop == IR::Opcode::SLessThanEqual32) {
+                                    bound = std::min(bound, lim);
+                                }
+                            }
+                            return {inc, bound};
+                        }
+                    }
+                }
+            }
+        }
+        u32 common_stride = 0;
+        bool has_arg = false;
+        for (size_t i = 0; i < inst->NumArgs(); ++i) {
+            const IR::Value arg = inst->Arg(i);
+            if (arg == IR::Value{inst}) {
+                continue;
+            }
+            const auto sub = GetRangeAndStride(arg, depth + 1);
+            common_stride = std::gcd(common_stride, sub.stride);
+            has_arg = true;
+        }
+        if (has_arg) {
+            return {common_stride == 0 ? 1u : common_stride, std::numeric_limits<u32>::max()};
+        }
+        return {};
+    }
+    default:
+        return {};
+    }
+}
+
+void FoldIEqual32(IR::Inst& inst) {
+    if (FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a == b; })) {
+        return;
+    }
+    for (size_t imm_idx : {0u, 1u}) {
+        if (inst.Arg(imm_idx).IsImmediate() && !inst.Arg(1 - imm_idx).IsImmediate()) {
+            const u32 k = inst.Arg(imm_idx).U32();
+            const auto rs = GetRangeAndStride(inst.Arg(1 - imm_idx));
+            if (k > rs.max_val || (rs.stride > 1 && (k % rs.stride) != 0)) {
+                inst.ReplaceUsesWithAndRemove(IR::Value{false});
+                return;
+            }
+        }
+    }
+}
+
 void FoldSelect(IR::Inst& inst) {
     const IR::Value cond{inst.Arg(0)};
     if (cond.IsImmediate()) {
+        boost::container::small_vector<IR::Inst*, 4> phi_users;
+        for (const auto& [user, operand] : inst.Uses()) {
+            if (user->GetOpcode() == IR::Opcode::Phi) {
+                phi_users.push_back(user);
+            }
+        }
         inst.ReplaceUsesWithAndRemove(cond.U1() ? inst.Arg(1) : inst.Arg(2));
+        for (IR::Inst* phi : phi_users) {
+            TryResolveTrivialPhi(phi);
+        }
+        return;
     }
     if (inst.GetOpcode() == IR::Opcode::SelectU1) {
         if (inst.Arg(1).IsImmediate() && inst.Arg(1).U1() == true && inst.Arg(2).IsImmediate() &&
@@ -493,8 +707,11 @@ void ConstantPropagation(IR::Block& block, IR::Inst& inst) {
     case IR::Opcode::UGreaterThanEqual64:
         FoldWhenAllImmediates(inst, [](u64 a, u64 b) { return a >= b; });
         return;
+    case IR::Opcode::Phi:
+        TryResolveTrivialPhi(&inst);
+        return;
     case IR::Opcode::IEqual32:
-        FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a == b; });
+        FoldIEqual32(inst);
         return;
     case IR::Opcode::IEqual64:
         FoldWhenAllImmediates(inst, [](u64 a, u64 b) { return a == b; });
