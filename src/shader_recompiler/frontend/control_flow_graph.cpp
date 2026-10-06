@@ -129,11 +129,13 @@ void CFG::EmitLabels() {
                 if (auto t = ResolveSetPcTarget(inst_list, i, index_to_pc)) {
                     target = *t;
                 } else {
-                    ASSERT_MSG(
-                        false,
+                    LOG_WARNING(
+                        Render_Recompiler,
                         "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
-                        "instructions not recognized or invalid pattern",
+                        "instructions not recognized or invalid pattern; treating as termination",
                         pc, i);
+                    AddLabel(pc + inst.length);
+                    continue;
                 }
             }
             AddLabel(target);
@@ -248,15 +250,21 @@ void CFG::SplitDivergenceScopes() {
                         // No epilogue block is needed since the divergence block
                         // also ends the parent block. Inherit the end condition.
                         auto& parent_blk = *blk;
-                        ASSERT(blk->cond == IR::Condition::True && blk->branch_true);
-                        block->cond = IR::Condition::True;
-                        block->branch_true = blk->branch_true;
-                        block->branch_false = nullptr;
+                        if (blk->branch_true) {
+                            block->cond = IR::Condition::True;
+                            block->branch_true = blk->branch_true;
+                            block->branch_false = nullptr;
 
-                        // If the parent block didn't enter the divergence scope
-                        // have it jump directly to the next one
-                        blk->branch_false = blk->branch_true;
-                        blk->branch_true->num_predecessors++;
+                            // If the parent block didn't enter the divergence scope
+                            // have it jump directly to the next one
+                            blk->branch_false = blk->branch_true;
+                            blk->branch_true->num_predecessors++;
+                        } else {
+                            block->cond = IR::Condition::True;
+                            block->end_class = blk->end_class;
+                            block->branch_true = nullptr;
+                            block->branch_false = nullptr;
+                        }
                     }
 
                     // Shrink parent block to end right before curr_begin
@@ -309,10 +317,12 @@ void CFG::EmitBlocks() {
 }
 
 void CFG::LinkBlocks() {
-    const auto get_block = [this](u32 address) {
+    const auto get_block = [this](u32 address) -> Block* {
         auto it = blocks.find(address, Compare{});
-        ASSERT_MSG(it != blocks.cend() && it->begin == address);
-        return &*it;
+        if (it != blocks.cend() && it->begin == address) {
+            return &*it;
+        }
+        return nullptr;
     };
 
     for (auto it = blocks.begin(); it != blocks.end(); it++) {
@@ -323,9 +333,16 @@ void CFG::LinkBlocks() {
         // need to link with the next block.
         if (!end_inst.IsTerminateInstruction()) {
             auto* next_block = get_block(block.end);
-            block.branch_true = next_block;
-            block.end_class = EndClass::Branch;
-            next_block->num_predecessors++;
+            if (next_block) {
+                block.branch_true = next_block;
+                block.end_class = EndClass::Branch;
+                next_block->num_predecessors++;
+            } else {
+                LOG_WARNING(Render_Recompiler,
+                            "Block at [{:#x}, {:#x}) does not terminate and has no successor; treating as Exit",
+                            block.begin, block.end);
+                block.end_class = EndClass::Exit;
+            }
             continue;
         }
 
@@ -335,37 +352,72 @@ void CFG::LinkBlocks() {
         u32 target_pc = 0;
         if (end_inst.opcode == Opcode::S_SETPC_B64) {
             auto tgt = ResolveSetPcTarget(inst_list, block.end_index, index_to_pc);
-            ASSERT_MSG(tgt,
-                       "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
-                       "instructions not recognized or invalid pattern",
-                       branch_pc, block.end_index);
-            target_pc = *tgt;
+            if (tgt) {
+                target_pc = *tgt;
+            } else {
+                LOG_WARNING(Render_Recompiler,
+                            "S_SETPC_B64 without a resolvable offset at PC {:#x} (Index {}): Involved "
+                            "instructions not recognized or invalid pattern; treating as Exit",
+                            branch_pc, block.end_index);
+                block.end_class = EndClass::Exit;
+                continue;
+            }
         } else {
             target_pc = end_inst.BranchTarget(branch_pc);
         }
 
         if (end_inst.IsUnconditionalBranch()) {
             auto* target_block = get_block(target_pc);
-            block.branch_true = target_block;
-            block.end_class = EndClass::Branch;
-            target_block->num_predecessors++;
+            if (target_block) {
+                block.branch_true = target_block;
+                block.end_class = EndClass::Branch;
+                target_block->num_predecessors++;
+            } else {
+                LOG_WARNING(Render_Recompiler,
+                            "Unconditional branch at PC {:#x} targets unmapped PC {:#x}; treating as Exit",
+                            branch_pc, target_pc);
+                block.end_class = EndClass::Exit;
+            }
         } else if (end_inst.IsConditionalBranch()) {
             auto* end_block = get_block(block.end);
             block.end_class = EndClass::Branch;
             if (target_pc != block.end) {
                 auto* target_block = get_block(target_pc);
-                block.branch_true = target_block;
-                block.branch_false = end_block;
-                target_block->num_predecessors++;
+                if (target_block && end_block) {
+                    block.branch_true = target_block;
+                    block.branch_false = end_block;
+                    target_block->num_predecessors++;
+                    end_block->num_predecessors++;
+                } else if (target_block) {
+                    block.branch_true = target_block;
+                    block.cond = IR::Condition::True;
+                    target_block->num_predecessors++;
+                } else if (end_block) {
+                    block.branch_true = end_block;
+                    block.cond = IR::Condition::True;
+                    end_block->num_predecessors++;
+                } else {
+                    LOG_WARNING(Render_Recompiler,
+                                "Conditional branch at PC {:#x} targets unmapped PC {:#x} and end {:#x}; treating as Exit",
+                                branch_pc, target_pc, block.end);
+                    block.end_class = EndClass::Exit;
+                }
             } else {
-                block.branch_true = end_block;
-                block.cond = IR::Condition::True;
+                if (end_block) {
+                    block.branch_true = end_block;
+                    block.cond = IR::Condition::True;
+                    end_block->num_predecessors++;
+                } else {
+                    block.end_class = EndClass::Exit;
+                }
             }
-            end_block->num_predecessors++;
         } else if (end_inst.opcode == Opcode::S_ENDPGM) {
             block.end_class = EndClass::Exit;
         } else {
-            UNREACHABLE();
+            LOG_WARNING(Render_Recompiler,
+                        "Terminating instruction {:#x} at PC {:#x} without explicit handler; treating as Exit",
+                        static_cast<u32>(end_inst.opcode), branch_pc);
+            block.end_class = EndClass::Exit;
         }
     }
 }
