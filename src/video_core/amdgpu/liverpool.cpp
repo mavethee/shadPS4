@@ -1000,7 +1000,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::WaitOnCeCounter: {
-                while (cblock.ce_count <= cblock.de_count && !ce_task.handle.done()) {
+                while (cblock.ce_count <= cblock.de_count && ce_task.handle && !ce_task.handle.done()) {
                     RESUME_GFX(ce_task);
                 }
                 break;
