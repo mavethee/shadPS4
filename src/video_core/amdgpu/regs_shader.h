@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include "common/assert.h"
 #include "common/types.h"
 #include "shader_recompiler/params.h"
@@ -228,12 +229,17 @@ struct ComputeProgram {
     }
 };
 
-static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
+struct BinaryLookupResult {
+    const BinaryInfo* info{};
+    u32 code_size_dwords{};
+};
+
+static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
     constexpr u32 token_mov_vcchi = 0xBEEB03FF;
     if (code[0] == token_mov_vcchi) {
         const auto* info = std::bit_cast<const BinaryInfo*>(code + (code[1] + 1) * 2);
         if (info->Valid()) {
-            return *info;
+            return {info, info->length / static_cast<u32>(sizeof(u32))};
         }
     }
     constexpr u32 signature_size = sizeof(BinaryInfo::signature_ref) / sizeof(u8);
@@ -241,7 +247,19 @@ static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
     const u32* end = code + search_limit;
     for (const u32* it = code; it < end; ++it) {
         if (const BinaryInfo* info = std::bit_cast<const BinaryInfo*>(it); info->Valid()) {
-            return *info;
+            // In non-standard shaders (e.g. Decima Engine), BinaryInfo is located after
+            // the code and a metadata footer. info->length covers the entire binary container.
+            // The shader instructions reside between `code` and `it`.
+            u32 max_code_dwords = std::min<u32>(info->length / sizeof(u32), static_cast<u32>(it - code));
+            constexpr u32 op_s_endpgm = 0xbf810000;
+            u32 code_dwords = max_code_dwords;
+            for (const u32* search = it - 1; search >= code; --search) {
+                if (*search == op_s_endpgm) {
+                    code_dwords = static_cast<u32>(search - code) + 1;
+                    break;
+                }
+            }
+            return {info, code_dwords};
         }
     }
     UNREACHABLE_MSG("Shader binary info not found.");
@@ -249,11 +267,11 @@ static constexpr const BinaryInfo& SearchBinaryInfo(const u32* code) {
 
 static constexpr Shader::ShaderParams GetParams(const auto& sh) {
     const auto* code = sh.template Address<u32*>();
-    const auto& bininfo = SearchBinaryInfo(code);
+    const auto lookup = SearchBinaryInfo(code);
     return {
         .user_data = sh.user_data,
-        .code = std::span{code, bininfo.length / sizeof(u32)},
-        .hash = bininfo.shader_hash,
+        .code = std::span{code, lookup.code_size_dwords},
+        .hash = lookup.info->shader_hash,
     };
 }
 
