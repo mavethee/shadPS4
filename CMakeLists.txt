@@ -599,6 +599,10 @@ set(USBD_LIB src/core/libraries/usbd/usbd.cpp
              src/core/libraries/usbd/emulated/skylander.h
 )
 
+set(MUSIC_LIB src/core/libraries/music/music_player_service.cpp
+              src/core/libraries/music/music_player_service.h
+)
+
 set(FIBER_LIB src/core/libraries/fiber/fiber_context.cpp
               src/core/libraries/fiber/fiber.cpp
               src/core/libraries/fiber/fiber.h
@@ -965,6 +969,7 @@ set(CORE src/core/aerolib/stubs.cpp
          ${PLAYGO_LIB}
          ${RANDOM_LIB}
          ${USBD_LIB}
+         ${MUSIC_LIB}
          ${ZLIB_LIB}
          ${MISC_LIBS}
          ${IME_LIB}
