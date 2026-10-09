@@ -107,6 +107,55 @@ s32 PS4_SYSV_ABI sceVideoOutAddVblankEvent(Kernel::OrbisKernelEqueue eq, s32 han
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI sceVideoOutSysAddSetModeEvent(Kernel::OrbisKernelEqueue eq, s32 handle, void* udata) {
+    LOG_INFO(Lib_VideoOut, "called, eq: {}, handle: {}, udata: {}", eq, handle, udata);
+    auto* port = driver->GetPort(handle == 2 ? 1 : handle);
+    auto equeue = Kernel::GetEqueue(eq);
+    if (equeue == nullptr) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
+    }
+
+    Kernel::EqueueEvent event{};
+    event.event.ident = static_cast<u64>(OrbisVideoOutInternalEventId::SetMode);
+    event.event.filter = Kernel::OrbisKernelEvent::Filter::VideoOut;
+    event.event.flags = Kernel::OrbisKernelEvent::Flags::Add | Kernel::OrbisKernelEvent::Flags::Clear;
+    event.event.udata = udata;
+    event.event.fflags = 0;
+    event.event.data = 0;
+    event.data = port;
+    equeue->AddEvent(event);
+
+    u64 trigger_hint = static_cast<u64>(OrbisVideoOutInternalEventId::SetMode) |
+                       (1920ULL << 16) | (1080ULL << 32);
+
+    equeue->TriggerEvent(
+        static_cast<u64>(OrbisVideoOutInternalEventId::SetMode),
+        Kernel::OrbisKernelEvent::Filter::VideoOut,
+        reinterpret_cast<void*>(trigger_hint)
+    );
+
+    if (port) {
+        std::scoped_lock lock{port->vo_mutex};
+        port->set_mode_events.push_back(eq);
+    }
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceVideoOutDeleteSetModeEvent(Kernel::OrbisKernelEqueue eq, s32 handle) {
+    auto* port = driver->GetPort(handle == 2 ? 1 : handle);
+    auto equeue = Kernel::GetEqueue(eq);
+    if (equeue == nullptr) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
+    }
+    equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::SetMode),
+                        Kernel::OrbisKernelEvent::Filter::VideoOut);
+    if (port) {
+        std::scoped_lock lock{port->vo_mutex};
+        std::erase(port->set_mode_events, eq);
+    }
+    return ORBIS_OK;
+}
+
 s32 PS4_SYSV_ABI sceVideoOutDeleteVblankEvent(Kernel::OrbisKernelEqueue eq, s32 handle) {
     auto* port = driver->GetPort(handle);
     if (port == nullptr) {
@@ -482,6 +531,10 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceVideoOutGetResolutionStatus); // sceVideoOutSysGetResolutionStatus
     LIB_FUNCTION("Ek+VR4lcJQI", "libSceVideoOut", 1, "libSceVideoOut",
                  sceVideoOutAddVblankEvent); // sceVideoOutSysAddVblankEvent
+    LIB_FUNCTION("X8FN-5Nk-yE", "libSceVideoOut", 1, "libSceVideoOut",
+                 sceVideoOutSysAddSetModeEvent);
+    LIB_FUNCTION("fYWVVDKZOCk", "libSceVideoOut", 1, "libSceVideoOut",
+                 sceVideoOutSysAddSetModeEvent);
     LIB_FUNCTION("Up36PTk687E", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutOpen);
     LIB_FUNCTION("zgXifHT9ErY", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutIsFlipPending);
     LIB_FUNCTION("N5KDtkIjjJ4", "libSceVideoOut", 1, "libSceVideoOut",
@@ -503,6 +556,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("-Ozn0F1AFRg", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutDeleteFlipEvent);
     LIB_FUNCTION("oNOQn3knW6s", "libSceVideoOut", 1, "libSceVideoOut",
                  sceVideoOutDeleteVblankEvent);
+    LIB_FUNCTION("fXCSkDTpJFg", "libSceVideoOut", 1, "libSceVideoOut",
+                 sceVideoOutDeleteSetModeEvent);
     LIB_FUNCTION("pjkDsgxli6c", "libSceVideoOut", 1, "libSceVideoOut", sceVideoOutModeSetAny_);
     LIB_FUNCTION("N1bEoJ4SRw4", "libSceVideoOut", 1, "libSceVideoOut",
                  sceVideoOutConfigureOutputMode_);

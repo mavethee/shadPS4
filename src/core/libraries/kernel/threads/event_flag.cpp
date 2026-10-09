@@ -254,7 +254,7 @@ int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* 
     if (ef == nullptr || pName == nullptr) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
-    if (pOptParam || attr > (ORBIS_KERNEL_EVF_ATTR_MULTI | ORBIS_KERNEL_EVF_ATTR_TH_PRIO)) {
+    if (pOptParam) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
@@ -264,30 +264,12 @@ int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* 
 
     auto thread_mode = EventFlagInternal::ThreadMode::Single;
     auto queue_mode = EventFlagInternal::QueueMode::Fifo;
-    switch (attr & 0xfu) {
-    case 0x01:
-        queue_mode = EventFlagInternal::QueueMode::Fifo;
-        break;
-    case 0x02:
+    if ((attr & 0xfu) == 0x02) {
         queue_mode = EventFlagInternal::QueueMode::ThreadPrio;
-        break;
-    case 0x00:
-        break;
-    default:
-        UNREACHABLE();
     }
 
-    switch (attr & 0xf0) {
-    case 0x10:
-        thread_mode = EventFlagInternal::ThreadMode::Single;
-        break;
-    case 0x20:
+    if ((attr & 0xf0u) == 0x20) {
         thread_mode = EventFlagInternal::ThreadMode::Multi;
-        break;
-    case 0x00:
-        break;
-    default:
-        UNREACHABLE();
     }
 
     *ef = new EventFlagInternal(std::string(pName), thread_mode, queue_mode, initPattern);

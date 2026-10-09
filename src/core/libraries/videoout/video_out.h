@@ -121,6 +121,8 @@ void PS4_SYSV_ABI sceVideoOutSetBufferAttribute(BufferAttribute* attribute, Pixe
                                                 u32 height, u32 pitchInPixel);
 s32 PS4_SYSV_ABI sceVideoOutAddFlipEvent(Kernel::OrbisKernelEqueue eq, s32 handle, void* udata);
 s32 PS4_SYSV_ABI sceVideoOutAddVblankEvent(Kernel::OrbisKernelEqueue eq, s32 handle, void* udata);
+s32 PS4_SYSV_ABI sceVideoOutSysAddSetModeEvent(Kernel::OrbisKernelEqueue eq, s32 handle, void* udata);
+s32 PS4_SYSV_ABI sceVideoOutDeleteSetModeEvent(Kernel::OrbisKernelEqueue eq, s32 handle);
 s32 PS4_SYSV_ABI sceVideoOutRegisterBuffers(s32 handle, s32 startIndex, void* const* addresses,
                                             s32 bufferNum, const BufferAttribute* attribute);
 s32 PS4_SYSV_ABI sceVideoOutGetBufferLabelAddress(s32 handle, uintptr_t* label_addr);

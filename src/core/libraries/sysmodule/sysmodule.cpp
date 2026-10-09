@@ -98,8 +98,9 @@ s32 PS4_SYSV_ABI sceSysmoduleLoadModule(OrbisSysModule id) {
     return result;
 }
 
-s32 PS4_SYSV_ABI sceSysmoduleLoadModuleByNameInternal() {
-    LOG_ERROR(Lib_SysModule, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceSysmoduleLoadModuleByNameInternal(const char* name, s32 argc,
+                                                      const void* argv) {
+    LOG_INFO(Lib_SysModule, "called, name = '{}', argc = {}", name ? name : "(null)", argc);
     return ORBIS_OK;
 }
 
@@ -154,8 +155,9 @@ s32 PS4_SYSV_ABI sceSysmoduleUnloadModule(OrbisSysModule id) {
     return unloadModule(id, 0, nullptr, nullptr, false);
 }
 
-s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleByNameInternal() {
-    LOG_ERROR(Lib_SysModule, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleByNameInternal(const char* name, s32 argc,
+                                                        const void* argv) {
+    LOG_INFO(Lib_SysModule, "called, name = '{}', argc = {}", name ? name : "(null)", argc);
     return ORBIS_OK;
 }
 

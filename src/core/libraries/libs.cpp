@@ -32,6 +32,7 @@
 #include "core/libraries/libs.h"
 #include "core/libraries/mouse/mouse.h"
 #include "core/libraries/move/move.h"
+#include "core/libraries/ipmi/ipmi.h"
 #include "core/libraries/music/music_player_service.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/network/http.h"
@@ -58,7 +59,9 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/playgo/playgo.h"
 #include "core/libraries/playgo/playgo_dialog.h"
+#include "core/libraries/psm/psm.h"
 #include "core/libraries/random/random.h"
+#include "core/libraries/regmgr/regmgr.h"
 #include "core/libraries/razor_cpu/razor_cpu.h"
 #include "core/libraries/remote_play/remoteplay.h"
 #include "core/libraries/rudp/rudp.h"
@@ -193,6 +196,9 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libSceVideoRecording.sprx", Libraries::VideoRecording::RegisterLib},
             {"libSceInvitationDialog.sprx", Libraries::InvitationDialog::RegisterLib},
             {"libSceNpUtility.sprx", Libraries::Np::NpUtility::RegisterLib},
+            {"libSceIpmi.sprx", Libraries::Ipmi::RegisterLib},
+            {"libScePsm.sprx", Libraries::Psm::RegisterLib},
+            {"libSceRegMgr.sprx", Libraries::RegMgr::RegisterLib},
 #ifdef ARCH_X86_64
             {"libSceFiber.sprx", Libraries::Fiber::RegisterLib},
 #endif

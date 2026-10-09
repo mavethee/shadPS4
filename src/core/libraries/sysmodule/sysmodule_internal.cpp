@@ -11,6 +11,7 @@
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/font/font.h"
 #include "core/libraries/font/fontft.h"
+#include "core/libraries/ipmi/ipmi.h"
 #include "core/libraries/jpeg/jpegenc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -19,6 +20,8 @@
 #include "core/libraries/libpng/pngenc.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/ngs2/ngs2.h"
+#include "core/libraries/psm/psm.h"
+#include "core/libraries/regmgr/regmgr.h"
 #include "core/libraries/rtc/rtc.h"
 #include "core/libraries/rudp/rudp.h"
 #include "core/libraries/sysmodule/sysmodule_error.h"
@@ -268,6 +271,9 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libSceMoveTracker.sprx", nullptr},
              {"libSceSystemGesture.sprx", &Libraries::SystemGesture::RegisterLib},
              {"libSceUsbStorage.sprx", &Libraries::UsbStorage::RegisterLib},
+             {"libSceIpmi.sprx", &Libraries::Ipmi::RegisterLib},
+             {"libScePsm.sprx", &Libraries::Psm::RegisterLib},
+             {"libSceRegMgr.sprx", &Libraries::RegMgr::RegisterLib},
              {"libSceVideoNativeExtEssential.sprx", nullptr},
              {"libSceXml.sprx", nullptr}});
 
@@ -289,7 +295,8 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
 
         // libSceUsbStorage, libSceVdecCore, and libSceAjm must always use HLE
         if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx" ||
-            mod_name == "libSceAjm.sprx") {
+            mod_name == "libSceAjm.sprx" || mod_name == "libSceIpmi.sprx" ||
+            mod_name == "libScePsm.sprx" || mod_name == "libSceRegMgr.sprx") {
             if (init_func) {
                 init_func(&linker->GetHLESymbols());
                 linker->RelocateAllImports();

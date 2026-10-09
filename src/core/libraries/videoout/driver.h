@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -27,6 +27,7 @@ struct VideoOutPort {
     SceVideoOutVblankStatus vblank_status;
     std::vector<Kernel::OrbisKernelEqueue> flip_events;
     std::vector<Kernel::OrbisKernelEqueue> vblank_events;
+    std::vector<Kernel::OrbisKernelEqueue> set_mode_events;
     std::mutex vo_mutex;
     std::mutex port_mutex;
     std::condition_variable vo_cv;

@@ -23,14 +23,16 @@ s32 PS4_SYSV_ABI sceSysmoduleIsCameraPreloaded();
 s32 PS4_SYSV_ABI sceSysmoduleIsLoaded(OrbisSysModule id);
 s32 PS4_SYSV_ABI sceSysmoduleIsLoadedInternal(OrbisSysModuleInternal id);
 s32 PS4_SYSV_ABI sceSysmoduleLoadModule(OrbisSysModule id);
-s32 PS4_SYSV_ABI sceSysmoduleLoadModuleByNameInternal();
+s32 PS4_SYSV_ABI sceSysmoduleLoadModuleByNameInternal(const char* name, s32 argc,
+                                                        const void* argv);
 s32 PS4_SYSV_ABI sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal id);
 s32 PS4_SYSV_ABI sceSysmoduleLoadModuleInternalWithArg(OrbisSysModuleInternal id, s32 argc,
                                                        const void* argv, u64 unk, s32* res_out);
 s32 PS4_SYSV_ABI sceSysmoduleMapLibcForLibkernel();
 s32 PS4_SYSV_ABI sceSysmodulePreloadModuleForLibkernel();
 s32 PS4_SYSV_ABI sceSysmoduleUnloadModule(OrbisSysModule id);
-s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleByNameInternal();
+s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleByNameInternal(const char* name, s32 argc,
+                                                          const void* argv);
 s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleInternal();
 s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleInternalWithArg();
 
