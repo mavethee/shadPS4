@@ -90,13 +90,16 @@ static int GetPortRange(OrbisAudioOutPort type) {
     case 4:
         return 4; // PADSPK
     case 5:
-        return 5; // Type 5
     case 6:
-        return 5; // Type 6
     case 7:
-        return 5; // Type 7
     case 8:
-        return 5; // Type 8
+    case 9:
+    case 10:
+    case 11:
+    case 12:
+    case 13:
+    case 14:
+        return 5; // Type 5-14
     case 126:
         return 6; // Audio3d
     case 125:
@@ -266,9 +269,8 @@ s32 PS4_SYSV_ABI sceAudioOutOpen(UserService::OrbisUserServiceUserId user_id,
         return ORBIS_AUDIO_OUT_ERROR_INVALID_FORMAT;
     }
 
-    if ((port_type < OrbisAudioOutPort::Main || port_type > OrbisAudioOutPort::PadSpk) &&
-        (port_type != OrbisAudioOutPort::Audio3d && port_type != OrbisAudioOutPort::Aux)) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
+    if ((_type < 0 || _type > 14) && (_type != 125 && _type != 126 && _type != 127)) {
+        LOG_ERROR(Lib_AudioOut, "Invalid port type {}", _type);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
     }
     if (sample_rate != 48000) {
@@ -286,8 +288,9 @@ s32 PS4_SYSV_ABI sceAudioOutOpen(UserService::OrbisUserServiceUserId user_id,
         LOG_ERROR(Lib_AudioOut, "Invalid format");
         return ORBIS_AUDIO_OUT_ERROR_INVALID_FORMAT;
     }
-    const auto attr = param_type.attributes;
-    if (attr < OrbisAudioOutParamAttr::None || attr > OrbisAudioOutParamAttr::MixToMain) {
+    const auto attr = param_type.attributes.Value();
+    if ((static_cast<u32>(attr) & ~(static_cast<u32>(OrbisAudioOutParamAttr::Restricted) |
+                                    static_cast<u32>(OrbisAudioOutParamAttr::MixToMain))) != 0) {
         // TODO Handle attributes in output audio device
         LOG_ERROR(Lib_AudioOut, "Invalid format attribute");
         return ORBIS_AUDIO_OUT_ERROR_INVALID_FORMAT;
@@ -379,15 +382,9 @@ s32 PS4_SYSV_ABI sceAudioOutClose(s32 handle) {
     }
 
     s32 port_type = GetPortType(handle);
-    if (port_type >= 5 && port_type <= 13) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
-        return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
-    }
-
-    // Check valid types
-    if (!((port_type >= 0 && port_type <= 4) || port_type == 14 || port_type == 126 ||
+    if (!((port_type >= 0 && port_type <= 14) || port_type == 125 || port_type == 126 ||
           port_type == 127)) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
+        LOG_ERROR(Lib_AudioOut, "Invalid port type {}", port_type);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
     }
 
@@ -546,15 +543,9 @@ s32 PS4_SYSV_ABI sceAudioOutOutput(s32 handle, void* ptr) {
     }
 
     s32 port_type = GetPortType(handle);
-    if (port_type >= 5 && port_type <= 13) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
-        return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
-    }
-
-    // Check valid types
-    if (!((port_type >= 0 && port_type <= 4) || port_type == 14 || port_type == 126 ||
+    if (!((port_type >= 0 && port_type <= 14) || port_type == 125 || port_type == 126 ||
           port_type == 127)) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
+        LOG_ERROR(Lib_AudioOut, "Invalid port type {}", port_type);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
     }
 
@@ -632,15 +623,9 @@ s32 PS4_SYSV_ABI sceAudioOutOutputs(OrbisAudioOutOutputParam* param, u32 num) {
             }
 
             s32 port_type = GetPortType(param[i].handle);
-            if (port_type >= 5 && port_type <= 13) {
-                LOG_ERROR(Lib_AudioOut, "Invalid port type");
-                return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
-            }
-
-            // Check valid types
-            if (!((port_type >= 0 && port_type <= 4) || port_type == 14 || port_type == 126 ||
+            if (!((port_type >= 0 && port_type <= 14) || port_type == 125 || port_type == 126 ||
                   port_type == 127)) {
-                LOG_ERROR(Lib_AudioOut, "Invalid port type");
+                LOG_ERROR(Lib_AudioOut, "Invalid port type {}", port_type);
                 return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
             }
 
@@ -707,15 +692,9 @@ s32 PS4_SYSV_ABI sceAudioOutSetVolume(s32 handle, s32 flag, s32* vol) {
     }
 
     s32 port_type = GetPortType(handle);
-    if (port_type >= 5 && port_type <= 13) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
-        return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
-    }
-
-    // Check valid types
-    if (!((port_type >= 0 && port_type <= 4) || port_type == 14 || port_type == 126 ||
+    if (!((port_type >= 0 && port_type <= 14) || port_type == 125 || port_type == 126 ||
           port_type == 127)) {
-        LOG_ERROR(Lib_AudioOut, "Invalid port type");
+        LOG_ERROR(Lib_AudioOut, "Invalid port type {}", port_type);
         return ORBIS_AUDIO_OUT_ERROR_INVALID_PORT_TYPE;
     }
 
