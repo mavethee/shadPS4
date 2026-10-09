@@ -32,6 +32,7 @@ private:
 private:
     AVCodecContext* m_codec_context = nullptr;
     SwsContext* m_sws_context = nullptr;
+    OrbisVideodec2DecoderConfigInfo m_config_info{};
 };
 
 } // namespace Libraries::Videodec2

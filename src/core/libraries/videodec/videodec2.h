@@ -266,9 +266,17 @@ s32 PS4_SYSV_ABI
 sceVideodec2QueryDecoderMemoryInfo(const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
                                    OrbisVideodec2DecoderMemoryInfo* decoder_mem_info);
 
+s32 PS4_SYSV_ABI
+sceVideodec2QueryHevcDecoderMemoryInfo(const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
+                                       OrbisVideodec2DecoderMemoryInfo* decoder_mem_info);
+
 s32 PS4_SYSV_ABI sceVideodec2CreateDecoder(const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
                                            const OrbisVideodec2DecoderMemoryInfo* decoder_mem_info,
                                            OrbisVideodec2Decoder* decoder);
+
+s32 PS4_SYSV_ABI sceVideodec2CreateHevcDecoder(
+    const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
+    const OrbisVideodec2DecoderMemoryInfo* decoder_mem_info, OrbisVideodec2Decoder* decoder);
 
 s32 PS4_SYSV_ABI sceVideodec2DeleteDecoder(OrbisVideodec2Decoder decoder);
 
