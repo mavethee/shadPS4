@@ -22,6 +22,7 @@
 #include "core/libraries/kernel/threads/thread_state.h"
 #include "core/libraries/libs.h"
 #include "core/memory.h"
+#include "core/signals.h"
 
 #if defined(ARCH_X86_64) || defined(__arm64__) || defined(__aarch64__)
 extern "C" void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func,
@@ -1223,6 +1224,16 @@ int PS4_SYSV_ABI posix_pthread_suspend_user_context_np(PthreadT thread) {
             SuspendThread(h);
         }
     }
+#else
+    if (thread->native_thr && thread != g_curthread) {
+        pthread_t pthr = reinterpret_cast<pthread_t>(thread->native_thr->GetHandle());
+        if (pthr) {
+            pthread_kill(pthr, SIGSLEEP);
+            for (int i = 0; i < 1000 && !thread->is_suspended_in_signal; ++i) {
+                std::this_thread::yield();
+            }
+        }
+    }
 #endif
 
     return 0;
@@ -1252,6 +1263,13 @@ int PS4_SYSV_ABI posix_pthread_resume_user_context_np(PthreadT thread) {
         HANDLE h = reinterpret_cast<HANDLE>(thread->native_thr->GetHandle());
         if (h) {
             ResumeThread(h);
+        }
+    }
+#else
+    if (thread->native_thr && thread != g_curthread) {
+        pthread_t pthr = reinterpret_cast<pthread_t>(thread->native_thr->GetHandle());
+        if (pthr) {
+            pthread_kill(pthr, SIGSLEEP);
         }
     }
 #endif
@@ -1351,6 +1369,11 @@ int PS4_SYSV_ABI posix_pthread_get_user_context_np(PthreadT thread, Ucontext* ct
                     got_state = true;
                 }
             }
+        }
+#else
+        if (thread->is_suspended_in_signal) {
+            ctx->uc_mcontext = thread->suspended_context;
+            got_state = true;
         }
 #endif
     }

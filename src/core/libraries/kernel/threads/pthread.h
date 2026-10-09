@@ -337,6 +337,8 @@ struct Pthread {
     std::atomic_bool sigsuspend_interrupted{};
     Sigset sigwait_set{};
     OrbisKernelExceptionHandlerStack sigaltstack{};
+    Mcontext suspended_context{};
+    std::atomic_bool is_suspended_in_signal{false};
 
     bool IsSignalBlocked(s32 sig) const;
     void QueueSignal(s32 sig);
