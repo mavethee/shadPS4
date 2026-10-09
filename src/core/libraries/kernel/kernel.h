@@ -67,6 +67,12 @@ struct AuthInfoData {
     u64 ucred[8];
 };
 
+s32 PS4_SYSV_ABI get_authinfo(s32 pid, AuthInfoData* p2);
+s32 PS4_SYSV_ABI get_self_auth_info(AuthInfoData* p2);
+s32 PS4_SYSV_ABI sceKernelGetIpcPath(const char* name, char* out_path);
+s32 PS4_SYSV_ABI sceKernelGetUtokenUseSoftwagnerForAcmgr();
+s32 PS4_SYSV_ABI sceKernelDebugGpuPaDebugIsInProgress();
+
 enum OrbisKernelTitleWorkaroundBits {
     BUG107292_EXTRA_USB_AUDIO_DEVICE = 0x0,
     BUG119504_SUSPEND_BLACK_LIST = 0x1,

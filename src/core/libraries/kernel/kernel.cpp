@@ -285,6 +285,29 @@ s32 PS4_SYSV_ABI get_authinfo(s32 pid, AuthInfoData* p2) {
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI get_self_auth_info(AuthInfoData* p2) {
+    return get_authinfo(0, p2);
+}
+
+s32 PS4_SYSV_ABI sceKernelGetIpcPath(const char* name, char* out_path) {
+    LOG_DEBUG(Lib_Kernel, "called, name = {}", name ? name : "null");
+    if (!name || !out_path) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    std::snprintf(out_path, 44, "/system_tmp/%.31s", name);
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetUtokenUseSoftwagnerForAcmgr() {
+    LOG_DEBUG(Lib_Kernel, "called");
+    return 0;
+}
+
+s32 PS4_SYSV_ABI sceKernelDebugGpuPaDebugIsInProgress() {
+    LOG_DEBUG(Lib_Kernel, "called");
+    return 0;
+}
+
 s32 PS4_SYSV_ABI sceKernelGetAppInfo(s32 pid, OrbisKernelAppInfo* app_info) {
     LOG_WARNING(Lib_Kernel, "(STUBBED) called, pid: {}", pid);
     if (pid != GLOBAL_PID) {
@@ -489,6 +512,11 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("YeU23Szo3BM", "libkernel", 1, "libkernel", sceKernelGetAllowedSdkVersionOnSystem);
     LIB_FUNCTION("Mv1zUObHvXI", "libkernel", 1, "libkernel", sceKernelGetSystemSwVersion);
     LIB_FUNCTION("igMefp4SAv0", "libkernel", 1, "libkernel", get_authinfo);
+    LIB_FUNCTION("p2xgfB-30g8", "libkernel", 1, "libkernel", get_self_auth_info);
+    LIB_FUNCTION("ePRSOZsroIQ", "libkernel", 1, "libkernel", sceKernelGetIpcPath);
+    LIB_FUNCTION("b0cryxaTM4k", "libkernel", 1, "libkernel",
+                 sceKernelGetUtokenUseSoftwagnerForAcmgr);
+    LIB_FUNCTION("+iVwFsjXaFQ", "libkernel", 1, "libkernel", sceKernelDebugGpuPaDebugIsInProgress);
     LIB_FUNCTION("G-MYv5erXaU", "libkernel", 1, "libkernel", sceKernelGetAppInfo);
     LIB_FUNCTION("1yca4VvfcNA", "libkernel", 1, "libkernel", sceKernelTitleWorkaroundIsEnabled);
     LIB_FUNCTION("+g+UP8Pyfmo", "libkernel", 1, "libkernel", sceKernelGetProcessType);

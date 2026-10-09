@@ -29,12 +29,23 @@ static std::vector<StubEntry> g_stub_entries;
 static std::mutex g_stub_mutex;
 
 static u64 PS4_SYSV_ABI CommonStub(u64 index) {
-    const auto& e = g_stub_entries[index];
-    if (e.nid) {
-        LOG_ERROR(Core, "Stub: {} (nid: {}) called, returning zero to {}", e.nid->name, e.nid->nid,
-                  __builtin_return_address(0));
-    } else {
-        LOG_ERROR(Core, "Stub: Unknown (nid: {}) called, returning zero to {}", e.nid_unknown,
+    std::string name;
+    std::string nid;
+    {
+        std::scoped_lock lock{g_stub_mutex};
+        if (index < g_stub_entries.size()) {
+            const auto& e = g_stub_entries[index];
+            if (e.nid) {
+                name = e.nid->name;
+                nid = e.nid->nid;
+            } else {
+                name = "Unknown";
+                nid = e.nid_unknown;
+            }
+        }
+    }
+    if (!name.empty()) {
+        LOG_ERROR(Core, "Stub: {} (nid: {}) called, returning zero to {}", name, nid,
                   __builtin_return_address(0));
     }
     return 0;

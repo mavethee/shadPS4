@@ -8,6 +8,7 @@
 #include "core/file_sys/fs.h"
 #include "core/libraries/ajm/ajm.h"
 #include "core/libraries/avplayer/avplayer.h"
+#include "core/libraries/composite/composite.h"
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/font/font.h"
 #include "core/libraries/font/fontft.h"
@@ -274,6 +275,7 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libSceIpmi.sprx", &Libraries::Ipmi::RegisterLib},
              {"libScePsm.sprx", &Libraries::Psm::RegisterLib},
              {"libSceRegMgr.sprx", &Libraries::RegMgr::RegisterLib},
+             {"libSceComposite.sprx", &Libraries::Composite::RegisterLib},
              {"libSceVideoNativeExtEssential.sprx", nullptr},
              {"libSceXml.sprx", nullptr}});
 
@@ -296,7 +298,8 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
         // libSceUsbStorage, libSceVdecCore, and libSceAjm must always use HLE
         if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx" ||
             mod_name == "libSceAjm.sprx" || mod_name == "libSceIpmi.sprx" ||
-            mod_name == "libScePsm.sprx" || mod_name == "libSceRegMgr.sprx") {
+            mod_name == "libScePsm.sprx" || mod_name == "libSceRegMgr.sprx" ||
+            mod_name == "libSceComposite.sprx") {
             if (init_func) {
                 init_func(&linker->GetHLESymbols());
                 linker->RelocateAllImports();

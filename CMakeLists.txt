@@ -517,6 +517,8 @@ set(SYSTEM_LIBS src/core/libraries/system/commondialog.cpp
                 src/core/libraries/psm/psm.h
                 src/core/libraries/regmgr/regmgr.cpp
                 src/core/libraries/regmgr/regmgr.h
+                src/core/libraries/composite/composite.cpp
+                src/core/libraries/composite/composite.h
 )
 
 set(VIDEOOUT_LIB src/core/libraries/videoout/buffer.h

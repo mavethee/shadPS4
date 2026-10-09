@@ -14,6 +14,7 @@
 #include "core/libraries/camera/camera.h"
 #include "core/libraries/companion/companion_httpd.h"
 #include "core/libraries/companion/companion_util.h"
+#include "core/libraries/composite/composite.h"
 #include "core/libraries/content_export/content_export.h"
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/fiber/fiber.h"
@@ -25,6 +26,7 @@
 #include "core/libraries/ime/ime.h"
 #include "core/libraries/ime/ime_dialog.h"
 #include "core/libraries/invitation_dialog/invitation_dialog.h"
+#include "core/libraries/ipmi/ipmi.h"
 #include "core/libraries/jpeg/jpegenc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/keyboard/keyboard.h"
@@ -32,7 +34,6 @@
 #include "core/libraries/libs.h"
 #include "core/libraries/mouse/mouse.h"
 #include "core/libraries/move/move.h"
-#include "core/libraries/ipmi/ipmi.h"
 #include "core/libraries/music/music_player_service.h"
 #include "core/libraries/net/net.h"
 #include "core/libraries/network/http.h"
@@ -61,8 +62,8 @@
 #include "core/libraries/playgo/playgo_dialog.h"
 #include "core/libraries/psm/psm.h"
 #include "core/libraries/random/random.h"
-#include "core/libraries/regmgr/regmgr.h"
 #include "core/libraries/razor_cpu/razor_cpu.h"
+#include "core/libraries/regmgr/regmgr.h"
 #include "core/libraries/remote_play/remoteplay.h"
 #include "core/libraries/rudp/rudp.h"
 #include "core/libraries/save_data/dialog/savedatadialog.h"
@@ -199,6 +200,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libSceIpmi.sprx", Libraries::Ipmi::RegisterLib},
             {"libScePsm.sprx", Libraries::Psm::RegisterLib},
             {"libSceRegMgr.sprx", Libraries::RegMgr::RegisterLib},
+            {"libSceComposite.sprx", Libraries::Composite::RegisterLib},
 #ifdef ARCH_X86_64
             {"libSceFiber.sprx", Libraries::Fiber::RegisterLib},
 #endif

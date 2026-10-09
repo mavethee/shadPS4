@@ -215,6 +215,13 @@ void Linker::Execute(const std::vector<std::string>& args) {
         Libraries::LibcInternal::RegisterLib(&GetHLESymbols());
     }
 
+    // Map libSceJson2 if present
+    const auto& json2_path = EmulatorSettings.GetSysModulesDir() / "libSceJson2.sprx";
+    if (std::filesystem::exists(json2_path)) {
+        LOG_INFO(Core_Linker, "Loading libSceJson2.sprx");
+        LoadModule(json2_path);
+    }
+
     // Relocate all modules
     RelocateAllImports();
 
