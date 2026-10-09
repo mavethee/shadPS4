@@ -469,37 +469,49 @@ int PS4_SYSV_ABI sceLncUtilUnregisterShellUI() {
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoft() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftAbort() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftGetStatus() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftGetStatus(int* status, int* arg2, int* arg3) {
+    LOG_INFO(Lib_SystemService, "called");
+    if (!status) {
+        return 0x80a10003;
+    }
+    *status = 2; // Activated
+    if (arg2)
+        *arg2 = 0;
+    if (arg3)
+        *arg3 = 0;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftInit() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftIsActivated() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftIsActivated(bool* is_activated) {
+    LOG_INFO(Lib_SystemService, "called, is_activated={:p}", (void*)is_activated);
+    if (!is_activated) {
+        return 0x80a10003;
+    }
+    *reinterpret_cast<u8*>(is_activated) = 1;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftStart() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftTerm() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
@@ -1813,8 +1825,8 @@ int PS4_SYSV_ABI sceSystemServiceIsAppSuspended() {
 }
 
 int PS4_SYSV_ABI sceSystemServiceIsBgmPlaying() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
-    return ORBIS_OK;
+    LOG_DEBUG(Lib_SystemService, "called");
+    return 0;
 }
 
 int PS4_SYSV_ABI sceSystemServiceIsEyeToEyeDistanceAdjusted() {
@@ -1967,6 +1979,26 @@ s32 PS4_SYSV_ABI sceSystemServiceParamGetInt(OrbisSystemServiceParamId param_id,
     case OrbisSystemServiceParamId::EnterButtonAssign:
         *value = u32(EmulatorSettings.IsCircleEnter() ? OrbisSystemParamEnterButtonAssign::Circle
                                                       : OrbisSystemParamEnterButtonAssign::Cross);
+        break;
+    case static_cast<OrbisSystemServiceParamId>(100):
+    case static_cast<OrbisSystemServiceParamId>(101):
+    case static_cast<OrbisSystemServiceParamId>(102):
+    case static_cast<OrbisSystemServiceParamId>(103):
+    case static_cast<OrbisSystemServiceParamId>(104):
+    case static_cast<OrbisSystemServiceParamId>(105):
+    case static_cast<OrbisSystemServiceParamId>(106):
+    case static_cast<OrbisSystemServiceParamId>(107):
+    case static_cast<OrbisSystemServiceParamId>(108):
+    case static_cast<OrbisSystemServiceParamId>(109):
+    case static_cast<OrbisSystemServiceParamId>(110):
+    case static_cast<OrbisSystemServiceParamId>(111):
+    case static_cast<OrbisSystemServiceParamId>(200):
+    case static_cast<OrbisSystemServiceParamId>(201):
+    case static_cast<OrbisSystemServiceParamId>(202):
+    case static_cast<OrbisSystemServiceParamId>(203):
+    case static_cast<OrbisSystemServiceParamId>(204):
+    case static_cast<OrbisSystemServiceParamId>(300):
+        *value = 0;
         break;
     default:
         LOG_ERROR(Lib_SystemService, "param_id {} unsupported!", u32(param_id));
@@ -2125,67 +2157,91 @@ int PS4_SYSV_ABI sceSystemServiceGetDbgExecutablePath() {
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevc() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcAbort() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateHevcGetStatus() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateHevcGetStatus(int* status, int* arg2, int* arg3) {
+    LOG_INFO(Lib_SystemService, "called");
+    if (!status) {
+        return 0x80a10003;
+    }
+    *status = 2; // Activated
+    if (arg2)
+        *arg2 = 0;
+    if (arg3)
+        *arg3 = 0;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcInit() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateHevcIsActivated() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateHevcIsActivated(bool* is_activated) {
+    LOG_INFO(Lib_SystemService, "called, is_activated={:p}", (void*)is_activated);
+    if (!is_activated) {
+        return 0x80a10003;
+    }
+    *reinterpret_cast<u8*>(is_activated) = 1;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcStart() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateHevcTerm() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Abort() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateMpeg2GetStatus() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateMpeg2GetStatus(int* status, int* arg2, int* arg3) {
+    LOG_INFO(Lib_SystemService, "called");
+    if (!status) {
+        return 0x80a10003;
+    }
+    *status = 2; // Activated
+    if (arg2)
+        *arg2 = 0;
+    if (arg3)
+        *arg3 = 0;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Init() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceSystemServiceActivateMpeg2IsActivated() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+int PS4_SYSV_ABI sceSystemServiceActivateMpeg2IsActivated(bool* is_activated) {
+    LOG_INFO(Lib_SystemService, "called, is_activated={:p}", (void*)is_activated);
+    if (!is_activated) {
+        return 0x80a10003;
+    }
+    *reinterpret_cast<u8*>(is_activated) = 1;
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Start() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Term() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_INFO(Lib_SystemService, "called");
     return ORBIS_OK;
 }
 
@@ -2435,7 +2491,7 @@ int PS4_SYSV_ABI sceSystemServiceLaunchStore() {
 }
 
 int PS4_SYSV_ABI sceSystemServiceTelemetrySetData() {
-    LOG_ERROR(Lib_SystemService, "(STUBBED) called");
+    LOG_DEBUG(Lib_SystemService, "(STUBBED) called");
     return ORBIS_OK;
 }
 
