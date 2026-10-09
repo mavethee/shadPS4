@@ -25,6 +25,10 @@
 #include "core/libraries/sysmodule/sysmodule_table.h"
 #include "core/libraries/system_gesture/system_gesture.h"
 #include "core/libraries/usbd/usbstorage.h"
+#include "core/libraries/videodec/vdeccore.h"
+#include "core/libraries/videodec/vdecsw.h"
+#include "core/libraries/videodec/videodec.h"
+#include "core/libraries/videodec/videodec2.h"
 #include "core/linker.h"
 #include "emulator.h"
 
@@ -234,6 +238,14 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libSceAudiodecCpuM4aac.sprx", nullptr},
              {"libSceAudiodecCpuDtsHdLbr.sprx", nullptr},
              {"libSceAudiodecCpuHevag.sprx", nullptr},
+             {"libSceVdecCore.sprx", &Libraries::VdecCore::RegisterLib},
+             {"libSceVdecSavc.sprx", nullptr},
+             {"libSceVdecSavc2.sprx", nullptr},
+             {"libSceVdecShevc.sprx", nullptr},
+             {"libSceVdecsw.sprx", &Libraries::Vdecsw::RegisterLib},
+             {"libSceVdecwrap.sprx", nullptr},
+             {"libSceVideodec.sprx", &Libraries::Videodec::RegisterLib},
+             {"libSceVideodec2.sprx", &Libraries::Videodec2::RegisterLib},
              {"libSceFont.sprx", &Libraries::Font::RegisterLib},
              {"libSceFontFt.sprx", &Libraries::FontFt::RegisterLib},
              {"libSceFreeTypeOt.sprx", nullptr},
@@ -249,6 +261,7 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libSceMoveTracker.sprx", nullptr},
              {"libSceSystemGesture.sprx", &Libraries::SystemGesture::RegisterLib},
              {"libSceUsbStorage.sprx", &Libraries::UsbStorage::RegisterLib},
+             {"libSceVideoNativeExtEssential.sprx", nullptr},
              {"libSceXml.sprx", nullptr}});
 
         // Iterate through the allowed array
@@ -267,8 +280,8 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
 
         auto& [name, init_func] = *it;
 
-        // libSceUsbStorage must always use HLE
-        if (mod_name == "libSceUsbStorage.sprx") {
+        // libSceUsbStorage and libSceVdecCore must always use HLE
+        if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx") {
             if (init_func) {
                 init_func(&linker->GetHLESymbols());
                 linker->RelocateAllImports();

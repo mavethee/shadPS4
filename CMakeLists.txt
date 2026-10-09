@@ -607,6 +607,8 @@ set(FIBER_LIB src/core/libraries/fiber/fiber_context.cpp
 
 set(VDEC_LIB src/core/libraries/videodec/video_utils.cpp
              src/core/libraries/videodec/video_utils.h
+             src/core/libraries/videodec/vdeccore.cpp
+             src/core/libraries/videodec/vdeccore.h
              src/core/libraries/videodec/vdecsw.cpp
              src/core/libraries/videodec/vdecsw.h
              src/core/libraries/videodec/vdecsw_impl.cpp

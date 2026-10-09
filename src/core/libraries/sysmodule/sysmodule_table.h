@@ -119,7 +119,7 @@ u16 g_libSceDepth_modules[2] = {76, 31};
 u16 g_libSceHand_modules[1] = {77};
 u16 g_libSceIme_modules[2] = {78, 6};
 u16 g_libSceImeDialog_modules[2] = {79, 6};
-u16 g_libSceVdecCore_modules[1] = {80};
+u16 g_libSceVdecCore_modules[4] = {80, 161, 162, 174};
 u16 g_libSceNpParty_modules[2] = {81, 6};
 u16 g_libSceAvcap_modules[2] = {82, 6};
 u16 g_libSceFontFt_modules[1] = {83};
@@ -183,7 +183,7 @@ u16 g_libSceAudiodecCpuLpcm_modules[1] = {140};
 u16 g_libSceBemp2sys_modules[1] = {141};
 u16 g_libSceBeisobmf_modules[1] = {142};
 u16 g_libScePlayReady_modules[1] = {143};
-u16 g_libSceVideoNativeExtEssential_modules[1] = {144};
+u16 g_libSceVideoNativeExtEssential_modules[4] = {144, 80, 161, 162};
 u16 g_libSceZlib_modules[1] = {145};
 u16 g_libSceIduUtil_modules[1] = {146};
 u16 g_libScePsm_modules[1] = {147};
@@ -203,7 +203,7 @@ u16 g_libSceAutoMounterClient_modules[2] = {159, 6};
 u16 g_libSceSystemGesture_modules[1] = {160};
 u16 g_libSceVdecSavc_modules[1] = {161};
 u16 g_libSceVdecSavc2_modules[1] = {162};
-u16 g_libSceVideodec2_modules[3] = {163, 80, 162};
+u16 g_libSceVideodec2_modules[5] = {163, 80, 161, 162, 174};
 u16 g_libSceVdecwrap_modules[2] = {164, 80};
 u16 g_libSceVshctl_modules[1] = {165};
 u16 g_libSceAt9Enc_modules[1] = {166};
@@ -444,7 +444,7 @@ std::array<OrbisSysmoduleModuleInternal, g_num_modules> g_modules_array = std::t
      {0x93, -1, 0, 4, "libSceHand", g_libSceHand_modules, 1},
      {0x95, -1, 0, 1, "libSceIme", g_libSceIme_modules, 2},
      {0x96, -1, 0, 1, "libSceImeDialog", g_libSceImeDialog_modules, 2},
-     {0x80000015, -1, 0, 1, "libSceVdecCore", g_libSceVdecCore_modules, 1},
+     {0x80000015, -1, 0, 1, "libSceVdecCore", g_libSceVdecCore_modules, 4},
      {0x97, -1, 0, 1, "libSceNpParty", g_libSceNpParty_modules, 2},
      {0x80000003, -1, 0, 1, "libSceAvcap", g_libSceAvcap_modules, 2},
      {0x98, -1, 0, 1, "libSceFontFt", g_libSceFontFt_modules, 1},
@@ -509,7 +509,7 @@ std::array<OrbisSysmoduleModuleInternal, g_num_modules> g_modules_array = std::t
      {0xc1, -1, 0, 1, "libSceBemp2sys", g_libSceBemp2sys_modules, 1},
      {0xc2, -1, 0, 1, "libSceBeisobmf", g_libSceBeisobmf_modules, 1},
      {0xc3, -1, 0, 1, "libScePlayReady", g_libScePlayReady_modules, 1},
-     {0xc4, -1, 0, 1, "libSceVideoNativeExtEssential", g_libSceVideoNativeExtEssential_modules, 1},
+     {0xc4, -1, 0, 1, "libSceVideoNativeExtEssential", g_libSceVideoNativeExtEssential_modules, 4},
      {0xc5, -1, 0, 1, "libSceZlib", g_libSceZlib_modules, 1},
      {0x8000002f, -1, 0, 1, "libSceIduUtil", g_libSceIduUtil_modules, 1},
      {0x80000030, -1, 0, 1, "libScePsm", g_libScePsm_modules, 1},
@@ -528,7 +528,7 @@ std::array<OrbisSysmoduleModuleInternal, g_num_modules> g_modules_array = std::t
      {0xce, -1, 0, 1, "libSceSystemGesture", g_libSceSystemGesture_modules, 1},
      {0x80000035, -1, 0, 1, "libSceVdecSavc", g_libSceVdecSavc_modules, 1},
      {0x80000036, -1, 0, 1, "libSceVdecSavc2", g_libSceVdecSavc2_modules, 1},
-     {0xcf, -1, 0, 2049, "libSceVideodec2", g_libSceVideodec2_modules, 3},
+     {0xcf, -1, 0, 2049, "libSceVideodec2", g_libSceVideodec2_modules, 5},
      {0xd0, -1, 0, 1, "libSceVdecwrap", g_libSceVdecwrap_modules, 2},
      {0x80000037, -1, 0, 1, "libSceVshctl", g_libSceVshctl_modules, 1},
      {0xd1, -1, 0, 1, "libSceAt9Enc", g_libSceAt9Enc_modules, 1},

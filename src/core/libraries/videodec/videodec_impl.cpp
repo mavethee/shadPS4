@@ -16,7 +16,26 @@ namespace Libraries::Videodec {
 VdecDecoder::VdecDecoder(const OrbisVideodecConfigInfo& pCfgInfoIn,
                          const OrbisVideodecResourceInfo& pRsrcInfoIn) {
 
-    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    AVCodecID codec_id = AV_CODEC_ID_H264;
+    switch (pCfgInfoIn.codecType) {
+    case 1: // AVC
+        codec_id = AV_CODEC_ID_H264;
+        break;
+    case 2: // MPEG-2
+        codec_id = AV_CODEC_ID_MPEG2VIDEO;
+        break;
+    case 3: // MPEG-4 Part 2 / ASP
+    case 4:
+        codec_id = AV_CODEC_ID_MPEG4;
+        break;
+    default:
+        codec_id = AV_CODEC_ID_H264;
+        break;
+    }
+    const AVCodec* codec = avcodec_find_decoder(codec_id);
+    if (!codec) {
+        codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    }
     ASSERT(codec);
 
     mCodecContext = avcodec_alloc_context3(codec);
