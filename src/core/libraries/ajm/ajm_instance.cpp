@@ -3,6 +3,7 @@
 
 #include "ajm_aac.h"
 #include "ajm_at9.h"
+#include "ajm_ffmpeg.h"
 #include "ajm_instance.h"
 #include "ajm_mp3.h"
 #include "ajm_result.h"
@@ -36,13 +37,21 @@ AjmInstance::AjmInstance(AjmCodecType codec_type, AjmInstanceFlags flags) : m_fl
             AjmFormatEncoding(flags.format), AjmMp3CodecFlags(flags.codec), u32(flags.channels));
         break;
     }
-    case AjmCodecType::M4aacDec: {
-        m_codec = std::make_unique<AjmAacDecoder>(
-            AjmFormatEncoding(flags.format), AjmAacCodecFlags(flags.codec), u32(flags.channels));
+    case AjmCodecType::M4aacDec:
+    case AjmCodecType::HeaacDec:
+    case AjmCodecType::Ac3Dec:
+    case AjmCodecType::Mpeg2BcDec:
+    case AjmCodecType::DtsDec:
+    case AjmCodecType::DtsHdDec:
+    case AjmCodecType::DtsHdMaDec:
+    case AjmCodecType::EAc3Dec: {
+        m_codec = std::make_unique<AjmFFmpegDecoder>(codec_type, AjmFormatEncoding(flags.format),
+                                                     flags.raw, u32(flags.channels));
         break;
     }
     default:
-        UNREACHABLE_MSG("Unimplemented codec type {}", magic_enum::enum_name(codec_type));
+        LOG_ERROR(Lib_Ajm, "Unimplemented codec type {}", magic_enum::enum_name(codec_type));
+        break;
     }
 }
 

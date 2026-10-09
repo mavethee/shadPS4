@@ -20,6 +20,15 @@ enum class AjmCodecType : u32 {
     Mp3Dec = 0,
     At9Dec = 1,
     M4aacDec = 2,
+    Ac3Dec = 6,
+    At9Enc = 7,
+    CelpDec = 8,
+    Mpeg2BcDec = 9,
+    HeaacDec = 11,
+    DtsDec = 14,
+    DtsHdDec = 16,
+    DtsHdMaDec = 18,
+    EAc3Dec = 20,
     Max = 23,
 };
 DECLARE_ENUM_FLAG_OPERATORS(AjmCodecType);
