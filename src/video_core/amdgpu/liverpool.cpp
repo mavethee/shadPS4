@@ -123,7 +123,7 @@ void Liverpool::Process(std::stop_token stoken) {
                 if (queue.submits.empty()) {
                     continue;
                 }
-                task = queue.submits.front();
+                task = queue.submits.front().handle;
             }
             task.resume();
 
@@ -1137,50 +1137,26 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     FIBER_EXIT;
 }
 
-Liverpool::CmdBuffer Liverpool::CopyCmdBuffers(std::span<const u32> dcb, std::span<const u32> ccb) {
-    auto& queue = mapped_queues[GfxQueueId];
-    ASSERT_MSG(queue.dcb_buffer.capacity() >= queue.dcb_buffer_offset + dcb.size(),
-               "dcb copy buffer out of reserved space");
-    ASSERT_MSG(queue.ccb_buffer.capacity() >= queue.ccb_buffer_offset + ccb.size(),
-               "ccb copy buffer out of reserved space");
-
-    queue.dcb_buffer.resize(
-        std::max(queue.dcb_buffer.size(), queue.dcb_buffer_offset + dcb.size()));
-    queue.ccb_buffer.resize(
-        std::max(queue.ccb_buffer.size(), queue.ccb_buffer_offset + ccb.size()));
-
-    const u32 prev_dcb_buffer_offset = queue.dcb_buffer_offset;
-    const u32 prev_ccb_buffer_offset = queue.ccb_buffer_offset;
-    if (!dcb.empty()) {
-        std::memcpy(queue.dcb_buffer.data() + queue.dcb_buffer_offset, dcb.data(),
-                    dcb.size_bytes());
-        queue.dcb_buffer_offset += dcb.size();
-        dcb = std::span<const u32>{queue.dcb_buffer.begin() + prev_dcb_buffer_offset,
-                                   queue.dcb_buffer.begin() + queue.dcb_buffer_offset};
-    }
-
-    if (!ccb.empty()) {
-        std::memcpy(queue.ccb_buffer.data() + queue.ccb_buffer_offset, ccb.data(),
-                    ccb.size_bytes());
-        queue.ccb_buffer_offset += ccb.size();
-        ccb = std::span<const u32>{queue.ccb_buffer.begin() + prev_ccb_buffer_offset,
-                                   queue.ccb_buffer.begin() + queue.ccb_buffer_offset};
-    }
-
-    return std::make_pair(dcb, ccb);
-}
-
 void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     auto& queue = mapped_queues[GfxQueueId];
 
+    std::vector<u32> dcb_storage;
+    std::vector<u32> ccb_storage;
     if (EmulatorSettings.IsCopyGpuBuffers()) {
-        std::tie(dcb, ccb) = CopyCmdBuffers(dcb, ccb);
+        dcb_storage.assign(dcb.begin(), dcb.end());
+        ccb_storage.assign(ccb.begin(), ccb.end());
+        dcb = dcb_storage;
+        ccb = ccb_storage;
     }
 
     auto task = ProcessGraphics(dcb, ccb);
     {
         std::scoped_lock lock{queue.m_access};
-        queue.submits.emplace(task.handle);
+        queue.submits.push(SubmitTask{
+            .handle = task.handle,
+            .dcb_storage = std::move(dcb_storage),
+            .ccb_storage = std::move(ccb_storage),
+        });
     }
 
     std::scoped_lock lk{submit_mutex};
@@ -1192,11 +1168,21 @@ void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
     ASSERT_MSG(gnm_vqid > 0 && gnm_vqid < NumTotalQueues, "Invalid virtual ASC queue index");
     auto& queue = mapped_queues[gnm_vqid];
 
+    std::vector<u32> acb_storage;
+    if (EmulatorSettings.IsCopyGpuBuffers()) {
+        acb_storage.assign(acb.begin(), acb.end());
+        acb = acb_storage;
+    }
+
     const auto vqid = gnm_vqid - 1;
     const auto& task = ProcessCompute(acb, vqid);
     {
         std::scoped_lock lock{queue.m_access};
-        queue.submits.emplace(task.handle);
+        queue.submits.push(SubmitTask{
+            .handle = task.handle,
+            .dcb_storage = std::move(acb_storage),
+            .ccb_storage = {},
+        });
     }
 
     std::scoped_lock lk{submit_mutex};
