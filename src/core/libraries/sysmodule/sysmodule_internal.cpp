@@ -24,6 +24,7 @@
 #include "core/libraries/sysmodule/sysmodule_internal.h"
 #include "core/libraries/sysmodule/sysmodule_table.h"
 #include "core/libraries/system_gesture/system_gesture.h"
+#include "core/libraries/usbd/usbstorage.h"
 #include "core/linker.h"
 #include "emulator.h"
 
@@ -247,6 +248,7 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libScePadTracker.sprx", nullptr},
              {"libSceMoveTracker.sprx", nullptr},
              {"libSceSystemGesture.sprx", &Libraries::SystemGesture::RegisterLib},
+             {"libSceUsbStorage.sprx", &Libraries::UsbStorage::RegisterLib},
              {"libSceXml.sprx", nullptr}});
 
         // Iterate through the allowed array
@@ -257,6 +259,22 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
             mod.is_loaded++;
             // Some internal checks rely on a handle, stub a valid one.
             mod.handle = stub_handle++;
+            if (res_out != nullptr) {
+                *res_out = ORBIS_OK;
+            }
+            return ORBIS_OK;
+        }
+
+        auto& [name, init_func] = *it;
+
+        // libSceUsbStorage must always use HLE
+        if (mod_name == "libSceUsbStorage.sprx") {
+            if (init_func) {
+                init_func(&linker->GetHLESymbols());
+                linker->RelocateAllImports();
+            }
+            mod.handle = stub_handle++;
+            mod.is_loaded++;
             if (res_out != nullptr) {
                 *res_out = ORBIS_OK;
             }
