@@ -83,7 +83,7 @@ static s32 PS4_SYSV_ABI DummyClientConnect(void* /*self*/, const void* name, siz
         LOG_INFO(Lib, "IPMI::Client::connect called");
     }
     if (out_session) {
-        *out_session = 1;
+        *out_session = 0;
     }
     return 0;
 }
