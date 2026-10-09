@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "core/libraries/kernel/threads.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/videodec/videodec2.h"
 #include "core/libraries/videodec/videodec2_impl.h"
@@ -281,6 +285,77 @@ s32 PS4_SYSV_ABI sceVideodec2GetHevcPictureInfo(const OrbisVideodec2OutputInfo* 
     return sceVideodec2GetPictureInfo(output_info, picture_info, nullptr);
 }
 
+static s32 PS4_SYSV_ABI sceVideodec2MapDirectMemory(void* decoder, void* mem_info) {
+    LOG_INFO(Lib_Vdec2, "sceVideodec2MapDirectMemory called");
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI
+sceVideodec2QueryHevcDecoderMemoryInfo(const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
+                                       OrbisVideodec2DecoderMemoryInfo* decoder_mem_info) {
+    LOG_TRACE(Lib_Vdec2, "called");
+    return sceVideodec2QueryDecoderMemoryInfo(decoder_cfg_info, decoder_mem_info);
+}
+
+s32 PS4_SYSV_ABI sceVideodec2CreateHevcDecoder(
+    const OrbisVideodec2DecoderConfigInfo* decoder_cfg_info,
+    const OrbisVideodec2DecoderMemoryInfo* decoder_mem_info, OrbisVideodec2Decoder* decoder) {
+    LOG_TRACE(Lib_Vdec2, "called");
+    return sceVideodec2CreateDecoder(decoder_cfg_info, decoder_mem_info, decoder);
+}
+
+static s32 PS4_SYSV_ABI sceVideoCoreAcquireDecoderResourceForBeWrapper(void* unk1, void* unk2,
+                                                                       u32* out_resource_id) {
+    static std::atomic<u32> s_res_id{1};
+    const u32 res_id = s_res_id.fetch_add(1);
+    LOG_INFO(Lib_Vdec2, "called, unk1={}, unk2={}, out_resource_id={:p}, assigned res_id={}", unk1,
+             unk2, (void*)out_resource_id, res_id);
+    if (out_resource_id) {
+        *out_resource_id = res_id;
+    }
+    if (unk2) {
+        LOG_INFO(Lib_Vdec2, "Dispatching VideoCore callback asynchronously: res_id={}", res_id);
+        auto cb = reinterpret_cast<void(PS4_SYSV_ABI*)(u32, u64)>(unk2);
+        std::thread([cb, res_id]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            LOG_INFO(Lib_Vdec2, "Invoking VideoCore callback: res_id={}", res_id);
+            cb(res_id, 0);
+        }).detach();
+    }
+    return ORBIS_OK;
+}
+
+static s32 PS4_SYSV_ABI sceVideoCoreReleaseDecoderResourceForBeWrapper(u32 resource_id) {
+    LOG_INFO(Lib_Vdec2, "called, resource_id={}", resource_id);
+    return ORBIS_OK;
+}
+
+static s32 PS4_SYSV_ABI sceVideoCoreAcquireDecoderResource(void* unk1, void* unk2,
+                                                           u32* out_resource_id) {
+    static std::atomic<u32> s_res_id{1};
+    const u32 res_id = s_res_id.fetch_add(1);
+    LOG_INFO(Lib_Vdec2, "called, unk1={}, unk2={}, out_resource_id={:p}, assigned res_id={}", unk1,
+             unk2, (void*)out_resource_id, res_id);
+    if (out_resource_id) {
+        *out_resource_id = res_id;
+    }
+    if (unk2) {
+        LOG_INFO(Lib_Vdec2, "Dispatching VideoCore callback asynchronously: res_id={}", res_id);
+        auto cb = reinterpret_cast<void(PS4_SYSV_ABI*)(u32, u64)>(unk2);
+        std::thread([cb, res_id]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            LOG_INFO(Lib_Vdec2, "Invoking VideoCore callback: res_id={}", res_id);
+            cb(res_id, 0);
+        }).detach();
+    }
+    return ORBIS_OK;
+}
+
+static s32 PS4_SYSV_ABI sceVideoCoreReleaseDecoderResource(u32 resource_id) {
+    LOG_INFO(Lib_Vdec2, "called, resource_id={}", resource_id);
+    return ORBIS_OK;
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("RnDibcGCPKw", "libSceVideodec2", 1, "libSceVideodec2",
                  sceVideodec2QueryComputeMemoryInfo);
@@ -291,7 +366,11 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
 
     LIB_FUNCTION("qqMCwlULR+E", "libSceVideodec2", 1, "libSceVideodec2",
                  sceVideodec2QueryDecoderMemoryInfo);
+    LIB_FUNCTION("krChT8KBUDU", "libSceVideodec2", 1, "libSceVideodec2",
+                 sceVideodec2QueryHevcDecoderMemoryInfo);
     LIB_FUNCTION("CNNRoRYd8XI", "libSceVideodec2", 1, "libSceVideodec2", sceVideodec2CreateDecoder);
+    LIB_FUNCTION("pu4kxXkYz3E", "libSceVideodec2", 1, "libSceVideodec2",
+                 sceVideodec2CreateHevcDecoder);
     LIB_FUNCTION("jwImxXRGSKA", "libSceVideodec2", 1, "libSceVideodec2", sceVideodec2DeleteDecoder);
     LIB_FUNCTION("852F5+q6+iM", "libSceVideodec2", 1, "libSceVideodec2", sceVideodec2Decode);
     LIB_FUNCTION("l1hXwscLuCY", "libSceVideodec2", 1, "libSceVideodec2", sceVideodec2Flush);
@@ -302,6 +381,17 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceVideodec2GetAvcPictureInfo);
     LIB_FUNCTION("7M+1UFqWOAI", "libSceVideodec2", 1, "libSceVideodec2",
                  sceVideodec2GetHevcPictureInfo);
+    LIB_FUNCTION("hIIZXUsMeI8", "libSceVideodec2", 1, "libSceVideodec2",
+                 sceVideodec2MapDirectMemory);
+
+    LIB_FUNCTION("vDenqj6dzGk", "libSceVideoCoreServerInterface", 1,
+                 "libSceVideoCoreServerInterface", sceVideoCoreAcquireDecoderResourceForBeWrapper);
+    LIB_FUNCTION("dlG8cpQGq64", "libSceVideoCoreServerInterface", 1,
+                 "libSceVideoCoreServerInterface", sceVideoCoreReleaseDecoderResourceForBeWrapper);
+    LIB_FUNCTION("9eP06So7cfY", "libSceVideoCoreServerInterface", 1,
+                 "libSceVideoCoreServerInterface", sceVideoCoreAcquireDecoderResource);
+    LIB_FUNCTION("k2ZyhP7QdaA", "libSceVideoCoreServerInterface", 1,
+                 "libSceVideoCoreServerInterface", sceVideoCoreReleaseDecoderResource);
 }
 
 } // namespace Libraries::Videodec2
