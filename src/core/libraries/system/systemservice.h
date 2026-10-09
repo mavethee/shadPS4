@@ -226,9 +226,11 @@ int PS4_SYSV_ABI sceLncUtilUnregisterDaemon();
 int PS4_SYSV_ABI sceLncUtilUnregisterShellUI();
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoft();
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftAbort();
-int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftGetStatus();
+int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftGetStatus(int* status = nullptr,
+                                                           int* arg2 = nullptr,
+                                                           int* arg3 = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftInit();
-int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftIsActivated();
+int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftIsActivated(bool* is_activated = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftStart();
 int PS4_SYSV_ABI sceSystemServiceActivateHevcSoftTerm();
 int PS4_SYSV_ABI sceShellCoreUtilAccessibilityZoomLock();
@@ -537,15 +539,17 @@ int PS4_SYSV_ABI Func_B8495C766861FDCF();
 int PS4_SYSV_ABI sceSystemServiceGetDbgExecutablePath();
 int PS4_SYSV_ABI sceSystemServiceActivateHevc();
 int PS4_SYSV_ABI sceSystemServiceActivateHevcAbort();
-int PS4_SYSV_ABI sceSystemServiceActivateHevcGetStatus();
+int PS4_SYSV_ABI sceSystemServiceActivateHevcGetStatus(int* status = nullptr, int* arg2 = nullptr,
+                                                       int* arg3 = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateHevcInit();
-int PS4_SYSV_ABI sceSystemServiceActivateHevcIsActivated();
+int PS4_SYSV_ABI sceSystemServiceActivateHevcIsActivated(bool* is_activated = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateHevcStart();
 int PS4_SYSV_ABI sceSystemServiceActivateHevcTerm();
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Abort();
-int PS4_SYSV_ABI sceSystemServiceActivateMpeg2GetStatus();
+int PS4_SYSV_ABI sceSystemServiceActivateMpeg2GetStatus(int* status = nullptr, int* arg2 = nullptr,
+                                                        int* arg3 = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Init();
-int PS4_SYSV_ABI sceSystemServiceActivateMpeg2IsActivated();
+int PS4_SYSV_ABI sceSystemServiceActivateMpeg2IsActivated(bool* is_activated = nullptr);
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Start();
 int PS4_SYSV_ABI sceSystemServiceActivateMpeg2Term();
 int PS4_SYSV_ABI sceSystemStateMgrCancelShutdownTimer();
