@@ -38,6 +38,131 @@ static PS4_SYSV_ABI void ProgramExitFunc() {
     LOG_ERROR(Core_Linker, "Exit function called");
 }
 
+static u64 PS4_SYSV_ABI FallbackAudioDecCpuQueryMemSize(void* arg1, void* arg2) {
+    LOG_INFO(Core_Linker, "FallbackAudioDecCpuQueryMemSize called: arg1={:p}, arg2={:p}", arg1,
+             arg2);
+    if (arg1) {
+        *reinterpret_cast<uint32_t*>(arg1) = 0x10000;
+        *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(arg1) + 8) = 0x10000;
+        *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(arg1) + 0x10) = 0x10000;
+    }
+    if (arg2) {
+        *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(arg2) + 0x10) = 0x10000;
+    }
+    return 0;
+}
+
+static u64 PS4_SYSV_ABI FallbackAudioDecCpuInitDecoder(void* handle, const void* init_param) {
+    LOG_INFO(Core_Linker, "FallbackAudioDecCpuInitDecoder called: handle={:p}, init_param={:p}",
+             handle, init_param);
+    return 0;
+}
+
+static u64 PS4_SYSV_ABI FallbackAudioDecCpuDecode(void* handle, void* in_param, void* out_param) {
+    if (!handle) {
+        return 0;
+    }
+    uint8_t** in_desc = *reinterpret_cast<uint8_t***>(reinterpret_cast<uint8_t*>(handle) + 0x10);
+    uint8_t** out_desc = *reinterpret_cast<uint8_t***>(reinterpret_cast<uint8_t*>(handle) + 0x18);
+    if (!in_desc || !out_desc) {
+        return 0;
+    }
+
+    uint8_t* in_ptr = *reinterpret_cast<uint8_t**>(reinterpret_cast<uint8_t*>(in_desc) + 8);
+    uint32_t in_size = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(in_desc) + 0x10);
+    uint8_t* out_ptr = *reinterpret_cast<uint8_t**>(reinterpret_cast<uint8_t*>(out_desc) + 8);
+    uint32_t out_avail = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(out_desc) + 0x10);
+
+    LOG_INFO(Core_Linker,
+             "FallbackAudioDecCpuDecode: in_size={}, out_avail={}, in_ptr={:p}, out_ptr={:p}",
+             in_size, out_avail, (void*)in_ptr, (void*)out_ptr);
+
+    if (in_ptr && out_ptr && in_size > 0 && out_avail > 0) {
+        // Check for Blu-ray LPCM 4-byte header:
+        // Byte 2: [channel_layout:4][sample_rate:4], Byte 3: [bit_depth:2][reserved:6]
+        bool is_bd_lpcm = false;
+        uint8_t depth = 0;
+        if (in_size >= 4) {
+            uint8_t rate = in_ptr[2] & 0x0f;
+            depth = in_ptr[3] >> 6;
+            uint8_t ch = in_ptr[2] >> 4;
+            if ((rate == 1 || rate == 4 || rate == 5) && (depth >= 1 && depth <= 3) &&
+                (ch >= 1 && ch <= 11)) {
+                is_bd_lpcm = true;
+            }
+        }
+
+        if (is_bd_lpcm) {
+            const uint8_t* src = in_ptr + 4;
+            uint32_t payload_size = in_size - 4;
+            int16_t* dst = reinterpret_cast<int16_t*>(out_ptr);
+            uint32_t consumed = 4;
+            uint32_t written = 0;
+
+            if (depth == 3) { // 24-bit LPCM
+                // Each stereo frame is 6 bytes: [L_MSB, L_MID, L_LSB, R_MSB, R_MID, R_LSB]
+                size_t num_frames =
+                    std::min<size_t>(payload_size / 6, out_avail / (2 * sizeof(int16_t)));
+                for (size_t i = 0; i < num_frames; ++i) {
+                    dst[2 * i] = static_cast<int16_t>((src[6 * i] << 8) | src[6 * i + 1]);
+                    dst[2 * i + 1] = static_cast<int16_t>((src[6 * i + 3] << 8) | src[6 * i + 4]);
+                }
+                consumed += static_cast<uint32_t>(num_frames * 6);
+                written = static_cast<uint32_t>(num_frames * 2 * sizeof(int16_t));
+            } else if (depth == 1) { // 16-bit LPCM
+                // Each stereo frame is 4 bytes: [L_MSB, L_LSB, R_MSB, R_LSB]
+                size_t num_frames =
+                    std::min<size_t>(payload_size / 4, out_avail / (2 * sizeof(int16_t)));
+                for (size_t i = 0; i < num_frames; ++i) {
+                    dst[2 * i] = static_cast<int16_t>((src[4 * i] << 8) | src[4 * i + 1]);
+                    dst[2 * i + 1] = static_cast<int16_t>((src[4 * i + 2] << 8) | src[4 * i + 3]);
+                }
+                consumed += static_cast<uint32_t>(num_frames * 4);
+                written = static_cast<uint32_t>(num_frames * 2 * sizeof(int16_t));
+            } else { // 20-bit or other: truncate upper 16 bits
+                size_t num_frames =
+                    std::min<size_t>(payload_size / 6, out_avail / (2 * sizeof(int16_t)));
+                for (size_t i = 0; i < num_frames; ++i) {
+                    dst[2 * i] = static_cast<int16_t>((src[6 * i] << 8) | src[6 * i + 1]);
+                    dst[2 * i + 1] = static_cast<int16_t>((src[6 * i + 3] << 8) | src[6 * i + 4]);
+                }
+                consumed += static_cast<uint32_t>(num_frames * 6);
+                written = static_cast<uint32_t>(num_frames * 2 * sizeof(int16_t));
+            }
+
+            *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(out_desc) + 0x10) = written;
+            *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(in_desc) + 0x10) = consumed;
+        } else {
+            // Raw 16-bit big-endian PCM fallback
+            uint32_t bytes_to_copy = std::min(in_size, out_avail);
+            const uint16_t* src = reinterpret_cast<const uint16_t*>(in_ptr);
+            uint16_t* dst = reinterpret_cast<uint16_t*>(out_ptr);
+            size_t samples = bytes_to_copy / sizeof(uint16_t);
+            for (size_t i = 0; i < samples; ++i) {
+                dst[i] = __builtin_bswap16(src[i]);
+            }
+            *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(out_desc) + 0x10) =
+                static_cast<uint32_t>(samples * sizeof(uint16_t));
+            *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(in_desc) + 0x10) =
+                static_cast<uint32_t>(samples * sizeof(uint16_t));
+        }
+    }
+    return 0;
+}
+
+static u64 PS4_SYSV_ABI FallbackAudioDecCpuClearContext(void* handle) {
+    return 0;
+}
+
+struct FallbackAudioDecCpuOps {
+    u64 query_mem_size = reinterpret_cast<u64>(&FallbackAudioDecCpuQueryMemSize);
+    u64 init_decoder = reinterpret_cast<u64>(&FallbackAudioDecCpuInitDecoder);
+    u64 decode = reinterpret_cast<u64>(&FallbackAudioDecCpuDecode);
+    u64 clear_context = reinterpret_cast<u64>(&FallbackAudioDecCpuClearContext);
+};
+
+static FallbackAudioDecCpuOps g_fallback_audiodeccpu_ops;
+
 static PS4_SYSV_ABI void* RunMainEntry [[noreturn]] (EntryParams* params) {
 #ifdef ARCH_X86_64
     // Start shared library modules
@@ -266,6 +391,7 @@ s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, cons
     }
     auto* module = GetModule(handle);
     RelocateAnyImports(module);
+    RelocateAllImports();
 
     // If the new module has a TLS image, trigger its load when TlsGetAddr is called.
     if (module->tls.image_size != 0) {
@@ -435,6 +561,8 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
         record = mod->export_sym.FindSymbol(sr);
         if (record) {
             *return_info = *record;
+            LOG_INFO(Core_Linker, "Linker: Resolved {} as {} from module {}", sr.name,
+                     return_info->symbol.nidName, mod->name);
             return true;
         }
     }
@@ -442,6 +570,13 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
     const auto aeronid = AeroLib::FindByNid(sr.name.c_str());
     if (sym_type == Loader::SymbolType::Object) {
         return_info->symbol.nidName = aeronid ? aeronid->name : "Unknown object";
+        if (return_info->symbol.nidName.starts_with("audiodeccpuinternal_core_ops_lpcm_") ||
+            sr.name.starts_with("audiodeccpuinternal_core_ops_lpcm_")) {
+            LOG_INFO(Core_Linker, "Linker: Using fallback LPCM ops for {} ({})", sr.name,
+                     return_info->symbol.nidName);
+            return_info->virtual_address = reinterpret_cast<VAddr>(&g_fallback_audiodeccpu_ops);
+            return true;
+        }
         return_info->virtual_address = 0;
     } else if (aeronid) {
         return_info->symbol.nidName = aeronid->name;

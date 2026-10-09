@@ -169,6 +169,22 @@ s32 AjmContext::InstanceCreate(AjmCodecType codec_type, AjmInstanceFlags flags, 
     if (!IsRegistered(codec_type)) {
         return ORBIS_AJM_ERROR_CODEC_NOT_REGISTERED;
     }
+    switch (codec_type) {
+    case AjmCodecType::At9Dec:
+    case AjmCodecType::Mp3Dec:
+    case AjmCodecType::M4aacDec:
+    case AjmCodecType::Ac3Dec:
+    case AjmCodecType::Mpeg2BcDec:
+    case AjmCodecType::HeaacDec:
+    case AjmCodecType::DtsDec:
+    case AjmCodecType::DtsHdDec:
+    case AjmCodecType::DtsHdMaDec:
+    case AjmCodecType::EAc3Dec:
+        break;
+    default:
+        LOG_ERROR(Lib_Ajm, "Unsupported AJM codec type: {}", static_cast<u32>(codec_type));
+        return ORBIS_AJM_ERROR_CODEC_NOT_SUPPORTED;
+    }
     std::optional<u32> opt_index;
     {
         std::unique_lock lock(instances_mutex);

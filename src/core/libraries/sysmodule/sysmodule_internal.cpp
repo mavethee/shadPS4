@@ -6,6 +6,7 @@
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
+#include "core/libraries/ajm/ajm.h"
 #include "core/libraries/avplayer/avplayer.h"
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/font/font.h"
@@ -238,6 +239,12 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libSceAudiodecCpuM4aac.sprx", nullptr},
              {"libSceAudiodecCpuDtsHdLbr.sprx", nullptr},
              {"libSceAudiodecCpuHevag.sprx", nullptr},
+             {"libSceAudiodecCpuLpcm.sprx", nullptr},
+             {"libSceAudiodecCpuFlac.sprx", nullptr},
+             {"libSceAudiodecCpuAlac.sprx", nullptr},
+             {"libSceAudiodecCpuDts.sprx", nullptr},
+             {"libSceAudiodecCpuDtsHdMa.sprx", nullptr},
+             {"libSceAjm.sprx", &Libraries::Ajm::RegisterLib},
              {"libSceVdecCore.sprx", &Libraries::VdecCore::RegisterLib},
              {"libSceVdecSavc.sprx", nullptr},
              {"libSceVdecSavc2.sprx", nullptr},
@@ -280,8 +287,9 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
 
         auto& [name, init_func] = *it;
 
-        // libSceUsbStorage and libSceVdecCore must always use HLE
-        if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx") {
+        // libSceUsbStorage, libSceVdecCore, and libSceAjm must always use HLE
+        if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx" ||
+            mod_name == "libSceAjm.sprx") {
             if (init_func) {
                 init_func(&linker->GetHLESymbols());
                 linker->RelocateAllImports();
@@ -301,20 +309,18 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
             s32 handle = linker->LoadAndStartModule(module_path, argc, argv, &start_result);
             ASSERT_MSG(handle >= 0, "Failed to load module {}", mod_name);
             mod.handle = handle;
+            linker->RelocateAllImports();
         } else {
-            // Allowed LLE that isn't present, log message
-            auto& [name, init_func] = *it;
+            // Allowed LLE that isn't present, fallback to HLE
             if (init_func) {
                 LOG_INFO(Loader, "Can't Load {} switching to HLE", mod_name);
                 init_func(&linker->GetHLESymbols());
-
-                // When loading HLEs, we need to relocate imports
-                // This ensures later module loads can see our HLE functions.
                 linker->RelocateAllImports();
             } else {
                 LOG_INFO(Loader, "No HLE available for {} module", mod_name);
             }
             mod.handle = stub_handle++;
+            linker->RelocateAllImports();
         }
 
         // Mark module as loaded.
