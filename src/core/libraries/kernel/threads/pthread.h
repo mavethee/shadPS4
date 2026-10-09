@@ -212,6 +212,7 @@ using PthreadRwlockAttrT = PthreadRwlockAttr*;
 struct PthreadRwlock {
     Common::SharedFirstMutex lock;
     Pthread* owner;
+    std::string name;
 
     int Wrlock(const OrbisKernelTimespec* abstime);
     int Rdlock(const OrbisKernelTimespec* abstime);

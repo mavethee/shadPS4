@@ -1120,7 +1120,11 @@ s32 MemoryManager::Protect(VAddr addr, u64 size, MemoryProt prot) {
 
     // Ensure the range to modify is valid
     std::scoped_lock lk{mutex, unmap_mutex};
-    ASSERT_MSG(IsValidMapping(addr, size), "Attempted to access invalid address {:#x}", addr);
+    if (!IsValidMapping(addr, size)) {
+        LOG_WARNING(Kernel_Vmm, "MemoryManager::Protect: unmapped range {:#x} - {:#x}", addr,
+                    addr + size);
+        return ORBIS_KERNEL_ERROR_ENOMEM;
+    }
 
     // Appropriately restrict flags.
     constexpr static MemoryProt flag_mask =

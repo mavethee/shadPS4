@@ -120,6 +120,15 @@ s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, 
     return ORBIS_KERNEL_ERROR_ENOENT;
 }
 
+s32 PS4_SYSV_ABI sceKernelStopUnloadModule(s32 handle, u64 args, const void* argp, u32 flags,
+                                           const void* pOpt, s32* pRes) {
+    LOG_INFO(Lib_Kernel, "sceKernelStopUnloadModule: handle = {:#x}", handle);
+    if (pRes) {
+        *pRes = 0;
+    }
+    return ORBIS_OK;
+}
+
 s32 PS4_SYSV_ABI sceKernelDlsym(s32 handle, const char* symbol, void** addrp) {
     auto* linker = Common::Singleton<Core::Linker>::Instance();
     auto* module = linker->GetModule(handle);
@@ -127,6 +136,8 @@ s32 PS4_SYSV_ABI sceKernelDlsym(s32 handle, const char* symbol, void** addrp) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
     *addrp = module->FindByName(symbol);
+    LOG_INFO(Lib_Kernel, "sceKernelDlsym: handle = {}, symbol = '{}', resolved = {}", handle,
+             symbol ? symbol : "null", fmt::ptr(*addrp));
     if (*addrp == nullptr) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
@@ -176,7 +187,9 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoFromAddr(VAddr addr, s32 flags,
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
-    LOG_INFO(Lib_Kernel, "called addr = {:#x}, flags = {:#x}", addr, flags);
+    LOG_INFO(Lib_Kernel,
+             "called addr = {:#x}, flags = {:#x}, caller = {:p}, info = {:p}, st_size = {:#x}",
+             addr, flags, __builtin_return_address(0), static_cast<void*>(info), info->st_size);
     auto* linker = Common::Singleton<Core::Linker>::Instance();
     auto* module = linker->FindByAddress(addr);
     if (!module) {
@@ -297,7 +310,16 @@ s32 PS4_SYSV_ABI exit(s32 status) {
     return 0;
 }
 
+s32 PS4_SYSV_ABI sceKernelSetProcessProperty(u32 prop_type, const void* prop_data, size_t prop_size,
+                                             u64 unk1, u64 unk2) {
+    LOG_INFO(Lib_Kernel, "sceKernelSetProcessProperty: type = {:#x}, size = {}", prop_type,
+             prop_size);
+    return ORBIS_OK;
+}
+
 void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
+    LIB_FUNCTION("-W4xI5aVI8w", "libkernel", 1, "libkernel", sceKernelSetProcessProperty);
+    LIB_FUNCTION("-W4xI5aVI8w", "libkernel_psmkit", 1, "libkernel", sceKernelSetProcessProperty);
     LIB_FUNCTION("xeu-pV8wkKs", "libkernel", 1, "libkernel", sceKernelIsInSandbox);
     LIB_FUNCTION("WB66evu8bsU", "libkernel", 1, "libkernel", sceKernelGetCompiledSdkVersion);
     LIB_FUNCTION("WslcK1FQcGI", "libkernel", 1, "libkernel", sceKernelIsNeoMode);
@@ -311,6 +333,7 @@ void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("g0VTBxfJyu0", "libkernel", 1, "libkernel", sceKernelGetCurrentCpu);
     LIB_FUNCTION("959qrazPIrg", "libkernel", 1, "libkernel", sceKernelGetProcParam);
     LIB_FUNCTION("wzvqT4UqKX8", "libkernel", 1, "libkernel", sceKernelLoadStartModule);
+    LIB_FUNCTION("QKd0qM58Qes", "libkernel", 1, "libkernel", sceKernelStopUnloadModule);
     LIB_FUNCTION("LwG8g3niqwA", "libkernel", 1, "libkernel", sceKernelDlsym);
     LIB_FUNCTION("RpQJJVKTiFM", "libkernel", 1, "libkernel", sceKernelGetModuleInfoForUnwind);
     LIB_FUNCTION("f7KBOafysXo", "libkernel", 1, "libkernel", sceKernelGetModuleInfoFromAddr);
