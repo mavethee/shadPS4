@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -80,5 +80,15 @@ s32 PS4_SYSV_ABI sceJpegEncEncode(OrbisJpegEncHandle handle, const OrbisJpegEncE
                                   OrbisJpegEncOutputInfo* output_info);
 s32 PS4_SYSV_ABI sceJpegEncQueryMemorySize(const OrbisJpegEncCreateParam* param);
 
+s32 PS4_SYSV_ABI sceJpegDecQueryMemorySize(const void* in_param);
+s32 PS4_SYSV_ABI sceJpegDecCreate(const void* in_param, void* memory, u32 memory_size,
+                                  void** handle);
+s32 PS4_SYSV_ABI sceJpegDecDelete(void* handle);
+s32 PS4_SYSV_ABI sceJpegDecDecode(void* handle, const void* in_param, void* out_info);
+s32 PS4_SYSV_ABI sceJpegDecDecodeWithInputControl(void* handle, const void* in_param,
+                                                  void* out_info);
+s32 PS4_SYSV_ABI sceJpegDecParseHeader(const void* in_data, void* out_header);
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
+void RegisterDecLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::JpegEnc

@@ -25,6 +25,7 @@
 #include "core/libraries/ime/ime.h"
 #include "core/libraries/ime/ime_dialog.h"
 #include "core/libraries/invitation_dialog/invitation_dialog.h"
+#include "core/libraries/jpeg/jpegenc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/keyboard/keyboard.h"
 #include "core/libraries/libc_internal/libc_internal.h"
@@ -157,6 +158,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libScePlayGoDialog.sprx", Libraries::PlayGo::Dialog::RegisterLib},
             {"libSceRandom.sprx", Libraries::Random::RegisterLib},
             {"libSceUsbd.sprx", Libraries::Usbd::RegisterLib},
+            {"libSceJpegDec.sprx", Libraries::JpegEnc::RegisterDecLib},
             {"libSceAjm.sprx", Libraries::Ajm::RegisterLib},
             {"libSceErrorDialog.sprx", Libraries::ErrorDialog::RegisterLib},
             {"libSceImeDialog.sprx", Libraries::ImeDialog::RegisterLib},
