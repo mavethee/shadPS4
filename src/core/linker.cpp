@@ -28,6 +28,9 @@
 #include "core/tls.h"
 #include "ipc/ipc.h"
 
+#include <mutex>
+#include <unordered_set>
+
 #ifndef _WIN32
 #include <signal.h>
 #endif
@@ -222,6 +225,20 @@ void Linker::Execute(const std::vector<std::string>& args) {
         LoadModule(json2_path);
     }
 
+    // Map libmonosgen-2.0 if present
+    const auto& monosgen_path = EmulatorSettings.GetSysModulesDir() / "libmonosgen-2.0.sprx";
+    if (std::filesystem::exists(monosgen_path)) {
+        LOG_INFO(Core_Linker, "Loading libmonosgen-2.0.sprx");
+        LoadModule(monosgen_path);
+    }
+
+    // Map libScePsm if present
+    const auto& psm_path = EmulatorSettings.GetSysModulesDir() / "libScePsm.sprx";
+    if (std::filesystem::exists(psm_path)) {
+        LOG_INFO(Core_Linker, "Loading libScePsm.sprx");
+        LoadModule(psm_path);
+    }
+
     // Relocate all modules
     RelocateAllImports();
 
@@ -299,6 +316,14 @@ void Linker::Execute(const std::vector<std::string>& args) {
                 s32 ret = malloc_init();
                 ASSERT_MSG(ret == 0, "malloc_init failed");
                 sceLibcInternalMemoryMutexEnable();
+            }
+        }
+
+        // Start preloaded shared modules (e.g. libScePsm, libmonosgen)
+        for (auto& mod : m_modules) {
+            if (mod->IsSharedLib() &&
+                (mod->name.contains("libScePsm") || mod->name.contains("libmonosgen"))) {
+                mod->Start(0, nullptr, nullptr);
             }
         }
 
@@ -593,8 +618,18 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
         return_info->symbol.nidName = "Unknown !!!";
     }
     if (library->name != "libc" && library->name != "libSceFios2") {
-        LOG_WARNING(Core_Linker, "Linker: Stub resolved {} as {} (lib: {}, mod: {})", sr.name,
-                    return_info->symbol.nidName, library->name, module->name);
+        static std::mutex s_logged_stubs_mutex;
+        static std::unordered_set<std::string> s_logged_stubs;
+        const std::string key = module->name + "#" + sr.name;
+        bool should_log = false;
+        {
+            std::scoped_lock lock{s_logged_stubs_mutex};
+            should_log = s_logged_stubs.insert(key).second;
+        }
+        if (should_log) {
+            LOG_WARNING(Core_Linker, "Linker: Stub resolved {} as {} (lib: {}, mod: {})", sr.name,
+                        return_info->symbol.nidName, library->name, module->name);
+        }
     } else {
         if (library->name == "libc" && return_info->symbol.nidName == "Need_sceLibc") {
             Libraries::SysModule::g_need_scelibc = true;

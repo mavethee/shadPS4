@@ -218,6 +218,10 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
                 } else {
                     mod.callback(sym);
                 }
+            } else if (mod.module_name == "libScePsm.sprx" &&
+                       std::filesystem::exists(EmulatorSettings.GetSysModulesDir() /
+                                               mod.module_name)) {
+                LOG_WARNING(Loader, "{} LLEd", mod.module_name);
             } else if (std::filesystem::exists(game_specific_modules_path / mod.module_name)) {
                 LOG_WARNING(Loader, "{} LLEd", mod.module_name);
             } else {

@@ -87,8 +87,11 @@ void* PS4_SYSV_ABI sceKernelGetProcParam() {
 
 s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp,
                                           u32 flags, const void* pOpt, s32* pRes) {
-    LOG_INFO(Lib_Kernel, "called filename = {}, args = {}", moduleFileName, args);
-    ASSERT(flags == 0);
+    LOG_INFO(Lib_Kernel, "called filename = {}, args = {}, flags = {:#x}", moduleFileName, args,
+             flags);
+    if (flags != 0) {
+        LOG_WARNING(Lib_Kernel, "flags {:#x} not supported", flags);
+    }
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
 
@@ -96,24 +99,48 @@ s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, 
 
     s32 handle = -1;
 
+    const auto try_load_sys = [&](const std::string& name) -> s32 {
+        std::string fn = name;
+        if (fn.ends_with(".prx")) {
+            fn.replace(fn.length() - 4, 4, ".sprx");
+        }
+        const auto sys_path = EmulatorSettings.GetSysModulesDir() / fn;
+        if (std::filesystem::exists(sys_path)) {
+            return linker->LoadAndStartModule(sys_path, args, argp, pRes);
+        }
+        return -1;
+    };
+
     if (guest_path[0] == '/') {
-        // try load /system/common/lib/ +path
-        // try load /system/priv/lib/   +path
         handle = linker->LoadAndStartModule(guest_path, args, argp, pRes);
-        if (handle != -1)
+        if (handle != -1) {
             return handle;
+        }
+        const auto filename = std::filesystem::path(guest_path).filename().string();
+        handle = try_load_sys(filename);
+        if (handle != -1) {
+            return handle;
+        }
     } else {
         if (!guest_path.contains('/')) {
             handle = linker->LoadAndStartModule("/app0/" + guest_path, args, argp, pRes);
-            if (handle != -1)
+            if (handle != -1) {
                 return handle;
-            // if ((flags & 0x10000) != 0)
-            //  try load /system/priv/lib/   +basename
-            //  try load /system/common/lib/ +basename
+            }
+            handle = try_load_sys(guest_path);
+            if (handle != -1) {
+                return handle;
+            }
         } else {
             handle = linker->LoadAndStartModule(guest_path, args, argp, pRes);
-            if (handle != -1)
+            if (handle != -1) {
                 return handle;
+            }
+            const auto filename = std::filesystem::path(guest_path).filename().string();
+            handle = try_load_sys(filename);
+            if (handle != -1) {
+                return handle;
+            }
         }
     }
 
@@ -335,6 +362,7 @@ void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("g0VTBxfJyu0", "libkernel", 1, "libkernel", sceKernelGetCurrentCpu);
     LIB_FUNCTION("959qrazPIrg", "libkernel", 1, "libkernel", sceKernelGetProcParam);
     LIB_FUNCTION("wzvqT4UqKX8", "libkernel", 1, "libkernel", sceKernelLoadStartModule);
+    LIB_FUNCTION("Y1nEpkCieOY", "libkernel", 1, "libkernel", sceKernelLoadStartModule);
     LIB_FUNCTION("QKd0qM58Qes", "libkernel", 1, "libkernel", sceKernelStopUnloadModule);
     LIB_FUNCTION("LwG8g3niqwA", "libkernel", 1, "libkernel", sceKernelDlsym);
     LIB_FUNCTION("RpQJJVKTiFM", "libkernel", 1, "libkernel", sceKernelGetModuleInfoForUnwind);

@@ -86,6 +86,7 @@ s32 PS4_SYSV_ABI posix_fdatasync(s32 fd);
 s32 PS4_SYSV_ABI sceKernelFdatasync(s32 fd);
 void PS4_SYSV_ABI posix_sync();
 void PS4_SYSV_ABI sceKernelSync();
+s64 PS4_SYSV_ABI posix_readlink(const char* path, char* buf, size_t bufsiz);
 void RegisterFileSystem(Core::Loader::SymbolsResolver* sym);
 
 } // namespace Libraries::Kernel

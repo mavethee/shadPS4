@@ -298,8 +298,7 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
         // libSceUsbStorage, libSceVdecCore, and libSceAjm must always use HLE
         if (mod_name == "libSceUsbStorage.sprx" || mod_name == "libSceVdecCore.sprx" ||
             mod_name == "libSceAjm.sprx" || mod_name == "libSceIpmi.sprx" ||
-            mod_name == "libScePsm.sprx" || mod_name == "libSceRegMgr.sprx" ||
-            mod_name == "libSceComposite.sprx") {
+            mod_name == "libSceRegMgr.sprx" || mod_name == "libSceComposite.sprx") {
             if (init_func) {
                 init_func(&linker->GetHLESymbols());
                 linker->RelocateAllImports();
@@ -526,6 +525,94 @@ s32 preloadModulesForLibkernel() {
         }
     }
     return ORBIS_OK;
+}
+
+s32 loadModuleByName(const char* name, s32 argc, const void* argv, s32* res_out) {
+    if (!name || *name == '\0') {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
+    std::string name_str(name);
+
+    // 1. Check if module is already loaded in Linker
+    u32 handle = linker->FindByName(name_str);
+    if (handle != static_cast<u32>(-1)) {
+        LOG_INFO(Lib_SysModule, "Module '{}' already loaded, handle = {}", name, handle);
+        return handle;
+    }
+
+    // 2. Check if present in sys_modules, game files, or direct path
+    const auto& sys_module_path = EmulatorSettings.GetSysModulesDir();
+    auto* game_info = Common::Singleton<Common::ElfInfo>::Instance();
+
+    std::vector<std::string> candidates;
+    if (name_str.ends_with(".sprx") || name_str.ends_with(".prx")) {
+        candidates.push_back(name_str);
+    } else {
+        candidates.push_back(name_str + ".sprx");
+        candidates.push_back(name_str + ".prx");
+        candidates.push_back(name_str);
+    }
+
+    std::filesystem::path resolved_path;
+    if (name_str[0] == '/' && std::filesystem::exists(name_str)) {
+        resolved_path = name_str;
+    } else {
+        for (const auto& cand : candidates) {
+            if (game_info && !game_info->GameSerial().empty()) {
+                auto game_mod = sys_module_path / game_info->GameSerial() / cand;
+                if (std::filesystem::exists(game_mod)) {
+                    resolved_path = game_mod;
+                    break;
+                }
+            }
+            auto global_mod = sys_module_path / cand;
+            if (std::filesystem::exists(global_mod)) {
+                resolved_path = global_mod;
+                break;
+            }
+            auto app0_mod = std::filesystem::path("/app0/sce_module") / cand;
+            if (std::filesystem::exists(app0_mod)) {
+                resolved_path = app0_mod;
+                break;
+            }
+        }
+    }
+
+    if (!resolved_path.empty()) {
+        LOG_INFO(Lib_SysModule, "Loading module '{}' from {}", name, resolved_path.string());
+        s32 start_result = 0;
+        s32 mod_handle = linker->LoadAndStartModule(resolved_path, argc, argv, &start_result);
+        if (mod_handle >= 0) {
+            linker->RelocateAllImports();
+            if (res_out) {
+                *res_out = start_result;
+            }
+            return mod_handle;
+        }
+        LOG_ERROR(Lib_SysModule, "Failed to load and start module '{}' from {}", name,
+                  resolved_path.string());
+        return ORBIS_KERNEL_ERROR_ENOENT;
+    }
+
+    // 3. Fallback: check g_modules_array for matching module name
+    for (const auto& mod : g_modules_array) {
+        if (mod.name && (name_str == mod.name || name_str == std::string(mod.name) + ".sprx")) {
+            LOG_INFO(Lib_SysModule, "Loading module '{}' via g_modules_array id {:#x}", name,
+                     mod.id);
+            s32 res = loadModule(mod.id, argc, argv, res_out);
+            if (res == ORBIS_OK) {
+                s32 h = -1;
+                getModuleHandle(mod.id, &h);
+                return h >= 0 ? h : ORBIS_OK;
+            }
+            return res;
+        }
+    }
+
+    LOG_WARNING(Lib_SysModule, "Module '{}' not found", name);
+    return ORBIS_KERNEL_ERROR_ENOENT;
 }
 
 } // namespace Libraries::SysModule

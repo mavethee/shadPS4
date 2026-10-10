@@ -3,6 +3,8 @@
 
 #include <mutex>
 
+#include <fmt/format.h>
+
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
@@ -16,7 +18,7 @@
 
 namespace Libraries::SysModule {
 
-static std::mutex g_mutex{};
+static std::recursive_mutex g_mutex{};
 
 s32 PS4_SYSV_ABI sceSysmoduleGetModuleHandleInternal(OrbisSysModuleInternal id, s32* handle) {
     LOG_INFO(Lib_SysModule, "called");
@@ -101,7 +103,11 @@ s32 PS4_SYSV_ABI sceSysmoduleLoadModule(OrbisSysModule id) {
 s32 PS4_SYSV_ABI sceSysmoduleLoadModuleByNameInternal(const char* name, s32 argc,
                                                       const void* argv) {
     LOG_INFO(Lib_SysModule, "called, name = '{}', argc = {}", name ? name : "(null)", argc);
-    return ORBIS_OK;
+    if (!name) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    std::scoped_lock lk{g_mutex};
+    return loadModuleByName(name, argc, argv, nullptr);
 }
 
 s32 PS4_SYSV_ABI sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal id) {
@@ -157,7 +163,7 @@ s32 PS4_SYSV_ABI sceSysmoduleUnloadModule(OrbisSysModule id) {
 
 s32 PS4_SYSV_ABI sceSysmoduleUnloadModuleByNameInternal(const char* name, s32 argc,
                                                         const void* argv) {
-    LOG_INFO(Lib_SysModule, "called, name = '{}', argc = {}", name ? name : "(null)", argc);
+    LOG_INFO(Lib_SysModule, "called, arg = {}, argc = {}", fmt::ptr(name), argc);
     return ORBIS_OK;
 }
 

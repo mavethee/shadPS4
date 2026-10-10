@@ -810,6 +810,47 @@ s32 PS4_SYSV_ABI posix_lstat(const char* path, OrbisKernelStat* sb) {
     return posix_stat(path, sb);
 }
 
+s64 PS4_SYSV_ABI posix_readlink(const char* path, char* buf, size_t bufsiz) {
+    LOG_DEBUG(Kernel_Fs, "path = {}, bufsiz = {}", path ? path : "null", bufsiz);
+    if (path == nullptr || buf == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+    if (bufsiz == 0) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+    if (strlen(path) > 255) {
+        *__Error() = POSIX_ENAMETOOLONG;
+        return -1;
+    }
+
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    std::string_view guest_path{path};
+    const auto host_path = mnt->GetHostPath(guest_path);
+
+    std::error_code ec;
+    if (host_path.empty() || !fs::exists(host_path, ec)) {
+        *__Error() = POSIX_ENOENT;
+        return -1;
+    }
+
+    if (fs::is_symlink(host_path, ec)) {
+        auto target = fs::read_symlink(host_path, ec).string();
+        if (ec) {
+            *__Error() = POSIX_EIO;
+            return -1;
+        }
+        size_t copy_len = std::min(bufsiz, target.length());
+        std::memcpy(buf, target.data(), copy_len);
+        return static_cast<s64>(copy_len);
+    }
+
+    // Path is not a symlink. On POSIX, readlink fails with EINVAL.
+    *__Error() = POSIX_EINVAL;
+    return -1;
+}
+
 s32 PS4_SYSV_ABI sceKernelStat(const char* path, OrbisKernelStat* sb) {
     s32 result = posix_stat(path, sb);
     if (result < 0) {
@@ -1860,6 +1901,10 @@ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("AUXVxWeJU-A", "libkernel", 1, "libkernel", sceKernelUnlink);
     LIB_FUNCTION("T8fER+tIGgk", "libScePosix", 1, "libkernel", posix_select);
     LIB_FUNCTION("T8fER+tIGgk", "libkernel", 1, "libkernel", posix_select);
+    LIB_FUNCTION("pd02UI9TbOA", "libkernel", 1, "libkernel", posix_readlink);
+    LIB_FUNCTION("pd02UI9TbOA", "libScePosix", 1, "libkernel", posix_readlink);
+    LIB_FUNCTION("pd02UI9TbOA", "libkernel_sys", 1, "libkernel", posix_readlink);
+    LIB_FUNCTION("wPwQ0-epfJw", "libkernel", 1, "libkernel", posix_readlink);
 }
 
 } // namespace Libraries::Kernel

@@ -116,6 +116,10 @@ static s32 PS4_SYSV_ABI sceCompositorQuit() {
     return 0;
 }
 
+static s32 PS4_SYSV_ABI sceCompositorStub0() {
+    return 0;
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("twGXom56jw0", "libSceComposite", 1, "libSceComposite",
                  sceCompositorGetRenderTargetResolution);
@@ -159,6 +163,9 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceCompositorCommandGpuPerfEnd);
     LIB_FUNCTION("xIkcEpdMxrw", "libSceComposite", 1, "libSceComposite", sceCompositorInit);
     LIB_FUNCTION("y5IJdPxdBrE", "libSceComposite", 1, "libSceComposite", sceCompositorQuit);
+    LIB_FUNCTION("KpuS3CIcckw", "libSceComposite", 1, "libSceComposite", sceCompositorStub0);
+    LIB_FUNCTION("XZzyQX4T5ts", "libSceComposite", 1, "libSceComposite", sceCompositorStub0);
+    LIB_FUNCTION("pefLEQksx34", "libSceComposite", 1, "libSceComposite", sceCompositorStub0);
 }
 
 } // namespace Libraries::Composite

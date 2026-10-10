@@ -89,8 +89,12 @@ public:
     }
 
     u32 FindByName(const std::filesystem::path& name) const {
+        if (name.empty()) {
+            return -1;
+        }
         for (u32 i = 0; i < m_modules.size(); i++) {
-            if (name == m_modules[i]->file) {
+            if (name == m_modules[i]->file || name == m_modules[i]->file.filename() ||
+                name == m_modules[i]->file.stem() || name == m_modules[i]->name) {
                 return i;
             }
         }

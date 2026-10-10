@@ -4,7 +4,11 @@
 #include <condition_variable>
 #include <list>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_map>
+
+#include <fmt/format.h>
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -51,6 +55,10 @@ public:
     EventFlagInternal(const std::string& name, ThreadMode thread_mode, QueueMode queue_mode,
                       u64 bits)
         : m_name(name), m_thread_mode(thread_mode), m_queue_mode(queue_mode), m_bits(bits) {}
+
+    [[nodiscard]] const std::string& GetName() const {
+        return m_name;
+    }
 
     ~EventFlagInternal() {
         std::unique_lock lock{m_mutex};
@@ -246,6 +254,9 @@ struct OrbisKernelEventFlagOptParam {
     size_t size;
 };
 
+static std::mutex g_event_flags_mutex;
+static std::unordered_map<std::string, EventFlagInternal*> g_named_event_flags;
+
 int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* pName, u32 attr,
                                           u64 initPattern,
                                           const OrbisKernelEventFlagOptParam* pOptParam) {
@@ -272,7 +283,15 @@ int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* 
         thread_mode = EventFlagInternal::ThreadMode::Multi;
     }
 
-    *ef = new EventFlagInternal(std::string(pName), thread_mode, queue_mode, initPattern);
+    auto* internal =
+        new EventFlagInternal(std::string(pName), thread_mode, queue_mode, initPattern);
+    *ef = internal;
+
+    {
+        std::scoped_lock lock{g_event_flags_mutex};
+        g_named_event_flags[std::string(pName)] = internal;
+    }
+
     return ORBIS_OK;
 }
 
@@ -281,17 +300,54 @@ int PS4_SYSV_ABI sceKernelDeleteEventFlag(OrbisKernelEventFlag ef) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
 
+    {
+        std::scoped_lock lock{g_event_flags_mutex};
+        for (auto it = g_named_event_flags.begin(); it != g_named_event_flags.end(); ++it) {
+            if (it->second == ef) {
+                g_named_event_flags.erase(it);
+                break;
+            }
+        }
+    }
+
     delete ef;
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceKernelOpenEventFlag() {
-    LOG_ERROR(Kernel_Event, "(STUBBED) called");
+int PS4_SYSV_ABI sceKernelOpenEventFlag(OrbisKernelEventFlag* ef, const char* pName) {
+    LOG_INFO(Kernel_Event, "called, name = {}", pName ? pName : "(null)");
+    if (ef == nullptr || pName == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+
+    std::scoped_lock lock{g_event_flags_mutex};
+    auto it = g_named_event_flags.find(pName);
+    if (it != g_named_event_flags.end()) {
+        *ef = it->second;
+        return ORBIS_OK;
+    }
+
+    // Special system event flags:
+    // "SceBootStatusFlags": System boot status event flag.
+    // In retail PS4, the kernel/init daemon sets boot status bits:
+    // e.g. bit 2 (0x4) for basic boot / subsystems, bit 10 (0x400) for AV / display.
+    // In shadPS4, initialize all bits to 1 so any boot wait completes immediately.
+    LOG_INFO(Kernel_Event, "Creating system named event flag: {}", pName);
+    auto* internal =
+        new EventFlagInternal(std::string(pName), EventFlagInternal::ThreadMode::Multi,
+                              EventFlagInternal::QueueMode::Fifo, 0xFFFFFFFFFFFFFFFFULL);
+    g_named_event_flags[std::string(pName)] = internal;
+    *ef = internal;
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceKernelCloseEventFlag() {
-    LOG_ERROR(Kernel_Event, "(STUBBED) called");
+int PS4_SYSV_ABI sceKernelCloseEventFlag(OrbisKernelEventFlag ef) {
+    LOG_INFO(Kernel_Event, "called ef = {}", fmt::ptr(ef));
+    if (ef == nullptr) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    // On PS4, closing a descriptor decrements reference count.
+    // For global/named event flags, we do NOT delete them on close.
     return ORBIS_OK;
 }
 

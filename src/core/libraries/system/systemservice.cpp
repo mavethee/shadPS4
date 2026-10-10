@@ -1296,6 +1296,10 @@ int PS4_SYSV_ABI sceShellCoreUtilPostLaunchConfirmResult() {
     return ORBIS_OK;
 }
 
+int PS4_SYSV_ABI sceShellCoreUtilUnknown_trmTLTHsKEY() {
+    return ORBIS_OK;
+}
+
 int PS4_SYSV_ABI sceShellCoreUtilPostPsmEventToShellUI() {
     LOG_ERROR(Lib_SystemService, "(STUBBED) called");
     return ORBIS_OK;
@@ -3040,6 +3044,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
                  sceShellCoreUtilPostErrorLog);
     LIB_FUNCTION("fCeSFo0IM-w", "libSceShellCoreUtil", 1, "libSceSystemService",
                  sceShellCoreUtilPostLaunchConfirmResult);
+    LIB_FUNCTION("trmTLTHsKEY", "libSceShellCoreUtil", 1, "libSceSystemService",
+                 sceShellCoreUtilUnknown_trmTLTHsKEY);
     LIB_FUNCTION("cZCJTMamDOE", "libSceShellCoreUtil", 1, "libSceSystemService",
                  sceShellCoreUtilPostPsmEventToShellUI);
     LIB_FUNCTION("PGHjjtZxKvs", "libSceShellCoreUtil", 1, "libSceSystemService",

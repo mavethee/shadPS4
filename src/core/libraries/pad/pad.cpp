@@ -743,6 +743,10 @@ int PS4_SYSV_ABI Func_EF103E845B6F0420() {
     return ORBIS_OK;
 }
 
+static s32 PS4_SYSV_ABI scePadStub0() {
+    return ORBIS_OK;
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     Common::Singleton<GameControllers>::Instance()->TryOpenSDLControllers();
 
@@ -843,6 +847,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("UeUUvNOgXKU", "libScePad", 1, "libScePad", Func_51E514BCD3A05CA5);
     LIB_FUNCTION("ickjfjk9okM", "libScePad", 1, "libScePad", Func_89C9237E393DA243);
     LIB_FUNCTION("7xA+hFtvBCA", "libScePad", 1, "libScePad", Func_EF103E845B6F0420);
+    LIB_FUNCTION("EvnKphv6uA0", "libScePad", 1, "libScePad", scePadStub0);
+    LIB_FUNCTION("o5QmTYcCLAo", "libScePad", 1, "libScePad", scePadStub0);
 };
 
 } // namespace Libraries::Pad
