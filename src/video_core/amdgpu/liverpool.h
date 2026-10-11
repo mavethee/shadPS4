@@ -20,6 +20,7 @@
 #include "common/types.h"
 #include "common/unique_function.h"
 #include "video_core/amdgpu/cb_db_extent.h"
+#include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/amdgpu/regs.h"
 
 namespace Vulkan {
@@ -152,6 +153,10 @@ public:
                (predication.address != 0);
     }
 
+    [[nodiscard]] PM4CmdSetPredication::PredOp GetPredicationOp() const noexcept {
+        return predication.op;
+    }
+
     [[nodiscard]] VAddr GetPredicationAddress() const noexcept {
         return predication.address;
     }
@@ -223,6 +228,7 @@ private:
 
     struct PredicationState {
         bool enabled{false};
+        PM4CmdSetPredication::PredOp op{PM4CmdSetPredication::PredOp::Disable};
         VAddr address{0};
         bool inverted{false};
         bool hint{false};
@@ -230,19 +236,15 @@ private:
         bool is_packet_predicated{false};
     } predication{};
 
-    std::optional<std::pair<u32, u32>> saved_index_base{};
-    void RestorePredicatedIndexBase() {
-        if (!saved_index_base) {
-            return;
-        }
-        regs.index_base_address.base_addr_lo = saved_index_base->first;
-        regs.index_base_address.base_addr_hi = saved_index_base->second;
-        saved_index_base.reset();
-    }
-
     VAddr indirect_args_addr{};
     u32 num_counter_pairs{};
-    u64 pixel_counter{};
+    struct PipeStatControl {
+        u32 stride{16};
+        u32 num_dbs{8};
+        u32 instance_mask{0xff};
+    } pipe_stat_control{};
+    u64 pixel_counter{1ULL};
+    u64 streamout_counter{1000ULL};
 
     struct ConstantEngine {
         void Reset() {
