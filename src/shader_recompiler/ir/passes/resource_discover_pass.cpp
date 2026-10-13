@@ -190,7 +190,9 @@ AnisoLod0Result CheckDisableAnisoLod0Pattern(IR::Value value) {
     }
 
     auto* prod0_arg0 = prod0->Arg(0).Inst();
-    ASSERT(prod0_arg0->GetOpcode() != IR::Opcode::Phi);
+    if (prod0_arg0->GetOpcode() == IR::Opcode::Phi) {
+        return {value, {}, false};
+    }
 
     // The bits range is for lods (note that constants are changed after constant propagation pass)
     if (prod0_arg0->GetOpcode() != IR::Opcode::BitFieldUExtract ||
@@ -207,7 +209,9 @@ AnisoLod0Result CheckDisableAnisoLod0Pattern(IR::Value value) {
 
     // We're working on the first dword of S#
     auto* prod2 = inst->Arg(2).Inst();
-    ASSERT(prod2->GetOpcode() != IR::Opcode::Phi);
+    if (prod2->GetOpcode() == IR::Opcode::Phi) {
+        return {value, {}, false};
+    }
     return {inst->Arg(2), prod0_arg0->Arg(0), true};
 }
 
@@ -274,7 +278,6 @@ SamplerPatchResult CheckClearAnisoRatioAndThresholdPattern(IR::Value value) {
 }
 
 IR::Inst* FindSharpSource(IR::Inst* handle) {
-    ASSERT(IsSharpSource(handle));
     return handle;
 }
 
@@ -286,7 +289,6 @@ void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
         if (!source) {
             continue;
         }
-        ASSERT(IsSharpSource(source));
         if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
             auto flags = source->Flags<IR::BufferInstInfo>();
             flags.sharp_source.Assign(1u);

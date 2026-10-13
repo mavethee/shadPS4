@@ -216,6 +216,13 @@ void Translator::EmitSOPK(const GcnInst& inst) {
         return S_ADDK_I32(inst);
     case Opcode::S_MULK_I32:
         return S_MULK_I32(inst);
+    case Opcode::S_GETREG_B32:
+    case Opcode::S_SETREG_B32:
+    case Opcode::S_GETREG_REGRD_B32:
+    case Opcode::S_SETREG_IMM32_B32:
+        LOG_WARNING(Render_Recompiler, "Ignoring unhandled HW register SOPK opcode {}",
+                    magic_enum::enum_name(inst.opcode));
+        return;
     default:
         LogMissingOpcode(inst);
     }

@@ -106,12 +106,16 @@ void Translator::EmitVectorAlu(const GcnInst& inst) {
         return V_ADD_F16(inst);
     case Opcode::V_SUB_F16:
         return V_SUB_F16(inst);
+    case Opcode::V_SUBREV_F16:
+        return V_SUBREV_F16(inst);
     case Opcode::V_MUL_F16:
         return V_MUL_F16(inst);
     case Opcode::V_MAX_F16:
         return V_MAX_F16(inst);
     case Opcode::V_MIN_F16:
         return V_MIN_F16(inst);
+    case Opcode::V_LDEXP_F16:
+        return V_LDEXP_F16(inst);
 
         // VOP1
     case Opcode::V_MOV_B32:
@@ -169,10 +173,12 @@ void Translator::EmitVectorAlu(const GcnInst& inst) {
     case Opcode::V_FLOOR_F32:
         return V_FLOOR_F32(inst);
     case Opcode::V_EXP_F32:
+    case Opcode::V_EXP_LEGACY_F32:
         return V_EXP_F32(inst);
     case Opcode::V_LOG_CLAMP_F32:
         return V_LOG_CLAMP_F32(inst);
     case Opcode::V_LOG_F32:
+    case Opcode::V_LOG_LEGACY_F32:
         return V_LOG_F32(inst);
     case Opcode::V_RCP_F32:
         return V_RCP_F32(inst);
@@ -873,6 +879,15 @@ void Translator::V_SUB_F16(const GcnInst& inst) {
     SetDst16(inst.dst[0], result);
 }
 
+void Translator::V_SUBREV_F16(const GcnInst& inst) {
+    const auto src0 = GetSrc16<IR::F32>(inst.src[0]);
+    const auto src1 = GetSrc16<IR::F32>(inst.src[1]);
+
+    const auto result = ir.FPSub(src1, src0);
+
+    SetDst16(inst.dst[0], result);
+}
+
 void Translator::V_MUL_F16(const GcnInst& inst) {
     const auto src0 = GetSrc16<IR::F32>(inst.src[0]);
     const auto src1 = GetSrc16<IR::F32>(inst.src[1]);
@@ -898,6 +913,13 @@ void Translator::V_MIN_F16(const GcnInst& inst) {
     const auto result = ir.FPMin(src0, src1);
 
     SetDst16(inst.dst[0], result);
+}
+
+void Translator::V_LDEXP_F16(const GcnInst& inst) {
+    const auto src0 = GetSrc16<IR::F32>(inst.src[0]);
+    const IR::U32 src1{GetSrc(inst.src[1])};
+
+    SetDst16(inst.dst[0], ir.FPLdexp(src0, src1));
 }
 
 // VOP1

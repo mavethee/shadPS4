@@ -44,15 +44,24 @@ void EmitControlFlowGraph(IR::Program& program, Pools& pools, Gcn::CFG& cfg,
                              std::span{program.ins_list}.subspan(start, size));
         program.blocks.push_back(ir_block);
     }
+    if (program.blocks.empty()) {
+        LOG_ERROR(Render_Recompiler, "No blocks in control flow graph!");
+        return;
+    }
     translator.EmitPrologue(program.blocks.front());
-    ASSERT_MSG(!program.info.translation_failed, "Shader translation has failed");
+    if (program.info.translation_failed) {
+        LOG_ERROR(Render_Recompiler, "Shader translation had errors, attempting best-effort emission");
+    }
     for (auto& block : cfg) {
         auto* ir_block = block.ir_block;
-        if (block.branch_true) {
+        if (!ir_block) {
+            continue;
+        }
+        if (block.branch_true && block.branch_true->ir_block) {
             auto* true_block = block.branch_true->ir_block;
             ir_block->AddBranch(true_block);
         }
-        if (block.branch_false) {
+        if (block.branch_false && block.branch_false->ir_block) {
             auto* false_block = block.branch_false->ir_block;
             ir_block->AddBranch(false_block);
         }
@@ -129,6 +138,10 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     // Structurize control flow graph and create program.
     program.syntax_list = Shader::Gcn::BuildASL(pools, cfg, info);
     program.blocks = GenerateBlocks(program.syntax_list);
+    if (program.blocks.empty() || program.syntax_list.empty()) {
+        LOG_ERROR(Render_Recompiler, "Failed to generate structured blocks");
+        return program;
+    }
     program.post_order_blocks = Shader::IR::PostOrder(program.syntax_list.front().data.block);
 
     // Run optimization passes on structured graph
