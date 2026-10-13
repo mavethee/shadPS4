@@ -10,6 +10,21 @@
 
 namespace AmdGpu {
 
+// Sony PSSL shader binary type — stored in BinaryInfo::type (4 bits).
+// Values from the PS4 GNM SDK (confirmed via shader dump analysis).
+enum ShaderBinaryType : u8 {
+    kShaderBinaryPs = 0,
+    kShaderBinaryVsVs = 1,
+    kShaderBinaryVsEs = 2,
+    kShaderBinaryVsLs = 3,
+    kShaderBinaryCs = 4,
+    kShaderBinaryGs = 5,
+    kShaderBinaryGsVs = 6,
+    kShaderBinaryHs = 7,
+    kShaderBinaryDsVs = 8,
+    kShaderBinaryUnknown = 0xF,
+};
+
 static constexpr u32 NUM_USER_DATA = 16;
 
 using UserData = std::array<u32, NUM_USER_DATA>;
@@ -234,6 +249,7 @@ struct BinaryLookupResult {
     const BinaryInfo* info{};
     u32 code_size_dwords{};
     u64 fallback_hash{};
+    ShaderBinaryType binary_type{kShaderBinaryUnknown};
 };
 
 static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
@@ -248,7 +264,8 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
     if (code[0] == token_mov_vcchi) {
         const auto* info = std::bit_cast<const BinaryInfo*>(code + (code[1] + 1) * 2);
         if (info->Valid()) {
-            return {code, info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash};
+            return {code, info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash,
+                    static_cast<ShaderBinaryType>(info->type)};
         }
     }
 
@@ -283,7 +300,8 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
     if (start_ptr) {
         const auto* pssl_info = std::bit_cast<const BinaryInfo*>(start_ptr + (start_ptr[1] + 1) * 2);
         if (pssl_info->Valid()) {
-            return {start_ptr, pssl_info, pssl_info->length / static_cast<u32>(sizeof(u32)), pssl_info->shader_hash};
+            return {start_ptr, pssl_info, pssl_info->length / static_cast<u32>(sizeof(u32)), pssl_info->shader_hash,
+                    static_cast<ShaderBinaryType>(pssl_info->type)};
         }
         if (found_info) {
             const auto* it = reinterpret_cast<const u32*>(found_info);
@@ -296,7 +314,8 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
                     }
                 }
             }
-            return {start_ptr, found_info, code_dwords, found_info->shader_hash};
+            return {start_ptr, found_info, code_dwords, found_info->shader_hash,
+                    static_cast<ShaderBinaryType>(found_info->type)};
         }
         // Scan for s_endpgm from start_ptr
         u32 code_dwords = 0;
@@ -327,7 +346,8 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
                 break;
             }
         }
-        return {code, found_info, code_dwords, found_info->shader_hash};
+        return {code, found_info, code_dwords, found_info->shader_hash,
+                static_cast<ShaderBinaryType>(found_info->type)};
     }
 
     // 5. Fallback: Raw or stripped shader without OrbShdr or vcchi preamble.
@@ -364,6 +384,7 @@ static constexpr Shader::ShaderParams GetParams(const auto& sh) {
         .user_data = sh.user_data,
         .code = std::span{start, lookup.code_size_dwords},
         .hash = lookup.info ? lookup.info->shader_hash : lookup.fallback_hash,
+        .binary_type = static_cast<u8>(lookup.binary_type),
     };
 }
 

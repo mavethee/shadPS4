@@ -616,6 +616,23 @@ bool PipelineCache::RefreshComputeKey() {
     Shader::Backend::Bindings binding{};
     const auto& cs_pgm = liverpool->GetCsRegs();
     const auto cs_params = AmdGpu::GetParams(cs_pgm);
+
+    // Validate shader binary type from OrbShdr header.
+    // On PS4 (GFX7/GFX8 Liverpool/Neo), COMPUTE_PGM_LO/HI must point to a compute shader.
+    // If the binary is tagged as a different stage (e.g. PS due to stale cs_state from
+    // unimplemented IT_SET_PREDICATION), skip the dispatch — real hardware would have
+    // predicated it away.
+    const auto binary_type = static_cast<AmdGpu::ShaderBinaryType>(cs_params.binary_type);
+    if (binary_type != AmdGpu::kShaderBinaryUnknown &&
+        binary_type != AmdGpu::kShaderBinaryCs) {
+        LOG_WARNING(Render_Vulkan,
+                    "DispatchDirect: COMPUTE_PGM points to non-CS shader (OrbShdr type={}, "
+                    "hash={:#x}). Likely stale cs_state from unimplemented predication — "
+                    "skipping dispatch.",
+                    static_cast<u32>(binary_type), cs_params.hash);
+        return false;
+    }
+
     std::tie(infos[0], modules[0], compute_key.value) =
         GetProgram(HwStage::Compute, SwStage::Compute, cs_params, binding);
     return true;
