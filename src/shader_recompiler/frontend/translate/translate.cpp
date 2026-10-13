@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/io_file.h"
+#include "common/number_utils.h"
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -532,7 +533,11 @@ T Translator::GetSrc16(const InstOperand& operand) {
         value = get_imm(-s32(operand.code) + SignedConstIntNegMin - 1);
         break;
     case OperandField::LiteralConst:
-        value = get_imm(operand.code);
+        if constexpr (is_float) {
+            value = get_imm(NumberUtils::Uf16ToF32(static_cast<u16>(operand.code)));
+        } else {
+            value = get_imm(operand.code);
+        }
         break;
     case OperandField::ConstFloatPos_1_0:
         value = get_imm(1.f);
