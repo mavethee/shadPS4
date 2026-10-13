@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/io_file.h"
+#include "common/number_utils.h"
 #include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -442,10 +443,7 @@ T Translator::GetSrc(const InstOperand& operand) {
         }
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
-                    std::to_underlying(operand.field));
-        value = get_imm(0U);
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 
     if constexpr (is_float) {
@@ -532,7 +530,11 @@ T Translator::GetSrc16(const InstOperand& operand) {
         value = get_imm(-s32(operand.code) + SignedConstIntNegMin - 1);
         break;
     case OperandField::LiteralConst:
-        value = get_imm(operand.code);
+        if constexpr (is_float) {
+            value = get_imm(NumberUtils::Uf16ToF32(static_cast<u16>(operand.code)));
+        } else {
+            value = get_imm(operand.code);
+        }
         break;
     case OperandField::ConstFloatPos_1_0:
         value = get_imm(1.f);
@@ -579,10 +581,7 @@ T Translator::GetSrc16(const InstOperand& operand) {
         }
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
-                    std::to_underlying(operand.field));
-        value = get_imm(0U);
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 
     if constexpr (is_float) {
@@ -704,10 +703,7 @@ IR::F32 Translator::GetSrcMix(const InstOperand& operand) {
         value = get_imm(static_cast<float>(1.0f / (2.0f * std::numbers::pi)));
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
-                    std::to_underlying(operand.field));
-        value = get_imm(0.f);
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 
     if (operand.input_modifier.neg_hi) {
@@ -808,10 +804,7 @@ T Translator::GetSrc64(const InstOperand& operand) {
         }
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
-                    std::to_underlying(operand.field));
-        value = get_imm(0ULL);
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 
     if constexpr (is_float) {
@@ -950,10 +943,7 @@ pk_type<T> Translator::GetSrcPk(const InstOperand& operand) {
         value = extract(ir.GetVccLo());
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
-                    std::to_underlying(operand.field));
-        value = get_imm(0U);
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 
     if constexpr (is_float) {
@@ -1004,22 +994,8 @@ void Translator::SetDst(const InstOperand& operand, const IR::U32F32& value) {
         return ir.SetVccHi(result);
     case OperandField::M0:
         return ir.SetM0(result);
-    case OperandField::Scc: {
-        const IR::U32 u32_res = (result.Type() == IR::Type::F32)
-                                    ? ir.BitCast<IR::U32>(IR::F32{result})
-                                    : IR::U32{result};
-        return ir.SetScc(ir.INotEqual(u32_res, ir.Imm32(0)));
-    }
-    case OperandField::ExecLo: {
-        const IR::U32 u32_res = (result.Type() == IR::Type::F32)
-                                    ? ir.BitCast<IR::U32>(IR::F32{result})
-                                    : IR::U32{result};
-        const auto mask = ir.PackUint2x32(ir.CompositeConstruct(u32_res, ir.Imm32(0)));
-        return ir.SetExec(ir.InverseBallot(mask));
-    }
     default:
-        LOG_WARNING(Render_Recompiler, "Unknown/unhandled destination operand {}, dropping write", u32(operand.field));
-        return;
+        UNREACHABLE_MSG("Unknown field {}", u32(operand.field));
     }
 }
 
@@ -1075,8 +1051,7 @@ void Translator::SetDst16(const InstOperand& operand, const IR::U32F32& value) {
         return ir.SetVectorReg(IR::VectorReg(operand.code), new_dst);
     }
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected destination operand: {}, dropping write", std::to_underlying(operand.field));
-        return;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 }
 
@@ -1131,8 +1106,7 @@ void Translator::SetDst64(const InstOperand& operand, const IR::U64F64& value_ra
         ir.SetExec(ir.InverseBallot(value_untyped));
         break;
     default:
-        LOG_WARNING(Render_Recompiler, "Unexpected destination operand: {}, dropping write", std::to_underlying(operand.field));
-        break;
+        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
     }
 }
 

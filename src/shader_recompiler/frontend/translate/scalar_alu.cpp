@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <magic_enum/magic_enum.hpp>
@@ -95,6 +95,7 @@ void Translator::EmitScalarAlu(const GcnInst& inst) {
 
             // SOP1
         case Opcode::S_MOV_B32:
+        case Opcode::S_MOV_REGRD_B32:
             return S_MOV(inst);
         case Opcode::S_MOV_B64:
             return S_MOV_B64(inst);
@@ -217,12 +218,8 @@ void Translator::EmitSOPK(const GcnInst& inst) {
     case Opcode::S_MULK_I32:
         return S_MULK_I32(inst);
     case Opcode::S_GETREG_B32:
-    case Opcode::S_SETREG_B32:
     case Opcode::S_GETREG_REGRD_B32:
-    case Opcode::S_SETREG_IMM32_B32:
-        LOG_WARNING(Render_Recompiler, "Ignoring unhandled HW register SOPK opcode {}",
-                    magic_enum::enum_name(inst.opcode));
-        return;
+        return S_GETREG_B32(inst);
     default:
         LogMissingOpcode(inst);
     }
@@ -527,6 +524,16 @@ void Translator::S_ADDK_I32(const GcnInst& inst) {
 void Translator::S_MULK_I32(const GcnInst& inst) {
     const s32 simm16 = inst.control.sopk.simm;
     SetDst(inst.dst[0], ir.IMul(GetSrc(inst.dst[0]), ir.Imm32(simm16)));
+}
+
+void Translator::S_GETREG_B32(const GcnInst& inst) {
+    const u16 simm16 = inst.control.sopk.simm;
+    const u32 hwreg = simm16 & 0x3F;
+    const u32 size = ((simm16 >> 6) & 0x1F) + 1;
+    const u32 offset = (simm16 >> 11) & 0x1F;
+    LOG_WARNING(Render_Recompiler, "S_GETREG_B32: hwreg={}, size={}, offset={}", hwreg, size,
+                offset);
+    SetDst(inst.dst[0], ir.Imm32(0));
 }
 
 // SOP1

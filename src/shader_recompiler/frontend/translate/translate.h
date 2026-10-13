@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -29,6 +29,7 @@ enum class ConditionOp : u32 {
     LE,
     TRU,
     U,
+    O,
 };
 
 enum class AtomicOp : u32 {
@@ -119,6 +120,7 @@ public:
     void S_CMPK(ConditionOp cond, bool is_signed, const GcnInst& inst);
     void S_ADDK_I32(const GcnInst& inst);
     void S_MULK_I32(const GcnInst& inst);
+    void S_GETREG_B32(const GcnInst& inst);
 
     // SOP1
     void S_MOV(const GcnInst& inst);
@@ -165,6 +167,7 @@ public:
     void V_MAC_LEGACY_F32(const GcnInst& inst);
     void V_MAD_LEGACY_F32(const GcnInst& inst);
     void V_MUL_I32_I24(const GcnInst& inst, bool is_signed);
+    void V_MUL_HI_I32_I24(const GcnInst& inst, bool is_signed);
     void V_MIN_F32(const GcnInst& inst, bool is_legacy = false);
     void V_MAX_F32(const GcnInst& inst, bool is_legacy = false);
     void V_MIN_I32(const GcnInst& inst);
@@ -197,6 +200,9 @@ public:
     void V_SUB_F16(const GcnInst& inst);
     void V_SUBREV_F16(const GcnInst& inst);
     void V_MUL_F16(const GcnInst& inst);
+    void V_MAC_F16(const GcnInst& inst);
+    void V_MADMK_F16(const GcnInst& inst);
+    void V_MADAK_F16(const GcnInst& inst);
     void V_MAX_F16(const GcnInst& inst);
     void V_MIN_F16(const GcnInst& inst);
     void V_LDEXP_F16(const GcnInst& inst);
@@ -207,6 +213,7 @@ public:
     void V_CVT_I32_F64(const GcnInst& inst);
     void V_CVT_F64_I32(const GcnInst& inst);
     void V_CVT_F64_U32(const GcnInst& inst);
+    void V_CVT_U32_F64(const GcnInst& inst);
     void V_CVT_F32_I32(const GcnInst& inst);
     void V_CVT_F32_U32(const GcnInst& inst);
     void V_CVT_U32_F32(const GcnInst& inst);
@@ -220,6 +227,8 @@ public:
     void V_CVT_F64_F32(const GcnInst& inst);
     void V_CVT_F32_UBYTE(u32 index, const GcnInst& inst);
     void V_TRUNC_F64(const GcnInst& inst);
+    void V_CEIL_F64(const GcnInst& inst);
+    void V_RNDNE_F64(const GcnInst& inst);
     void V_FLOOR_F64(const GcnInst& inst);
     void V_FRACT_F32(const GcnInst& inst);
     void V_TRUNC_F32(const GcnInst& inst);
@@ -229,14 +238,21 @@ public:
     void V_EXP_F32(const GcnInst& inst);
     void V_LOG_CLAMP_F32(const GcnInst& inst);
     void V_LOG_F32(const GcnInst& inst);
+    void V_LOG_LEGACY_F32(const GcnInst& inst);
+    void V_EXP_LEGACY_F32(const GcnInst& inst);
     void V_RCP_F32(const GcnInst& inst);
     void V_RCP_CLAMP_F32(const GcnInst& inst);
     void V_RCP_LEGACY_F32(const GcnInst& inst);
     void V_RCP_F64(const GcnInst& inst);
+    void V_RCP_CLAMP_F64(const GcnInst& inst);
     void V_RSQ_LEGACY_F32(const GcnInst& inst);
     void V_RSQ_F32(const GcnInst& inst);
     void V_RSQ_CLAMP_F32(const GcnInst& inst);
+    void V_RSQ_F64(const GcnInst& inst);
+    void V_RSQ_CLAMP_F64(const GcnInst& inst);
     void V_SQRT_F32(const GcnInst& inst);
+    void V_RCP_F16(const GcnInst& inst);
+    void V_SQRT_F16(const GcnInst& inst);
     void V_SIN_F32(const GcnInst& inst);
     void V_COS_F32(const GcnInst& inst);
     void V_NOT_B32(const GcnInst& inst);
@@ -254,11 +270,13 @@ public:
     void V_MOVRELSD_B32(const GcnInst& inst);
 
     // VOPC
+    void V_CMP_F16(ConditionOp op, bool ordered, bool set_exec, const GcnInst& inst);
     void V_CMP_F32(ConditionOp op, bool ordered, bool set_exec, const GcnInst& inst);
     void V_CMP_F64(ConditionOp op, bool ordered, bool set_exec, const GcnInst& inst);
+    void V_CMP_U16(ConditionOp op, bool is_signed, bool set_exec, const GcnInst& inst);
     void V_CMP_U32(ConditionOp op, bool is_signed, bool set_exec, const GcnInst& inst);
     void V_CMP_U64(ConditionOp op, bool is_signed, bool set_exec, const GcnInst& inst);
-    void V_CMP_CLASS_F32(const GcnInst& inst);
+    void V_CMP_CLASS_F32(bool set_exec, const GcnInst& inst);
 
     // VOP3a
     void V_MAD_F32(const GcnInst& inst);

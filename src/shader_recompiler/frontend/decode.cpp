@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -93,7 +93,8 @@ bool HasAdditionalLiteral(InstEncoding encoding, Opcode opcode) {
         return opcode == Opcode::S_SETREG_IMM32_B32;
     }
     case InstEncoding::VOP2: {
-        return opcode == Opcode::V_MADMK_F32 || opcode == Opcode::V_MADAK_F32;
+        return opcode == Opcode::V_MADMK_F32 || opcode == Opcode::V_MADAK_F32 ||
+               opcode == Opcode::V_MADMK_F16 || opcode == Opcode::V_MADAK_F16;
     }
     default:
         return false;
@@ -112,16 +113,7 @@ GcnInst GcnDecodeContext::decodeInstruction(GcnCodeSlice& code) {
     const uint32_t token = code.at(0);
 
     InstEncoding encoding = GetInstructionEncoding(token);
-    if (encoding == InstEncoding::ILLEGAL) {
-        LOG_WARNING(Render_Recompiler,
-                    "Illegal instruction encoding: {:#x}; treating as termination", token);
-        m_instruction = GcnInst();
-        m_instruction.opcode = Opcode::S_ENDPGM;
-        m_instruction.encoding = InstEncoding::SOPP;
-        m_instruction.length = sizeof(u32);
-        code.readu32();
-        return m_instruction;
-    }
+    ASSERT_MSG(encoding != InstEncoding::ILLEGAL, "illegal encoding: {:#x}", token);
     uint32_t encodingLen = getEncodingLength(encoding);
 
     // Clear the instruction
