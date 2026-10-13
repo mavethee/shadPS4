@@ -181,8 +181,8 @@ s32 PS4_SYSV_ABI sceGnmSetupMipStatsReport(void* output_buffer, u32 size_in_byte
 s32 PS4_SYSV_ABI sceGnmSetVgtControl(u32* cmdbuf, u32 size, u32 prim_group_sz_minus_one,
                                      u32 partial_vs_wave_mode, u32 wd_switch_only_on_eop_mode);
 s32 PS4_SYSV_ABI sceGnmSetVsShader(u32* cmdbuf, u32 size, const u32* vs_regs, u32 shader_modifier);
-int PS4_SYSV_ABI sceGnmSetWaveLimitMultiplier();
-int PS4_SYSV_ABI sceGnmSetWaveLimitMultipliers();
+s32 PS4_SYSV_ABI sceGnmSetWaveLimitMultiplier(u32 pipe_mask, u32 multiplier);
+s32 PS4_SYSV_ABI sceGnmSetWaveLimitMultipliers(u32 pipe_mask, const u8* multipliers);
 int PS4_SYSV_ABI sceGnmSpmEndSpm();
 int PS4_SYSV_ABI sceGnmSpmInit();
 int PS4_SYSV_ABI sceGnmSpmInit2();

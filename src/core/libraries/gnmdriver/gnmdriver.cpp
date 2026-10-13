@@ -2055,14 +2055,25 @@ s32 PS4_SYSV_ABI sceGnmSetVsShader(u32* cmdbuf, u32 size, const u32* vs_regs, u3
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceGnmSetWaveLimitMultiplier() {
-    LOG_ERROR(Lib_GnmDriver, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceGnmSetWaveLimitMultiplier(u32 pipe_mask, u32 multiplier) {
+    LOG_TRACE(Lib_GnmDriver, "(STUBBED) called, pipe_mask = {:#x}, multiplier = {}", pipe_mask,
+              multiplier);
+    return 1;
 }
 
-int PS4_SYSV_ABI sceGnmSetWaveLimitMultipliers() {
-    LOG_ERROR(Lib_GnmDriver, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceGnmSetWaveLimitMultipliers(u32 pipe_mask, const u8* multipliers) {
+    if (multipliers) {
+        LOG_TRACE(Lib_GnmDriver,
+                  "(STUBBED) called, pipe_mask = {:#x}, multipliers = [{:#x}, {:#x}, {:#x}, {:#x}, "
+                  "{:#x}, {:#x}, {:#x}, {:#x}]",
+                  pipe_mask, multipliers[0], multipliers[1], multipliers[2], multipliers[3],
+                  multipliers[4], multipliers[5], multipliers[6], multipliers[7]);
+    } else {
+        LOG_TRACE(Lib_GnmDriver, "(STUBBED) called, pipe_mask = {:#x}, multipliers = nullptr",
+                  pipe_mask);
+        return 0;
+    }
+    return 1;
 }
 
 int PS4_SYSV_ABI sceGnmSpmEndSpm() {
