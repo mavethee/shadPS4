@@ -966,11 +966,11 @@ Value IREmitter::Unpack2x16(const AmdGpu::NumberFormat number_format, const U32&
 U32 IREmitter::Pack4x8(const AmdGpu::NumberFormat number_format, const Value& vector) {
     switch (number_format) {
     case AmdGpu::NumberFormat::Unorm:
+    case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUnorm4x8, vector);
     case AmdGpu::NumberFormat::Snorm:
         return Inst<U32>(Opcode::PackSnorm4x8, vector);
     case AmdGpu::NumberFormat::Uint:
-    case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUint4x8, vector);
     case AmdGpu::NumberFormat::Sint:
         return Inst<U32>(Opcode::PackSint4x8, vector);
@@ -982,11 +982,11 @@ U32 IREmitter::Pack4x8(const AmdGpu::NumberFormat number_format, const Value& ve
 Value IREmitter::Unpack4x8(const AmdGpu::NumberFormat number_format, const U32& value) {
     switch (number_format) {
     case AmdGpu::NumberFormat::Unorm:
+    case AmdGpu::NumberFormat::Float:
         return Inst(Opcode::UnpackUnorm4x8, value);
     case AmdGpu::NumberFormat::Snorm:
         return Inst(Opcode::UnpackSnorm4x8, value);
     case AmdGpu::NumberFormat::Uint:
-    case AmdGpu::NumberFormat::Float:
         return Inst(Opcode::UnpackUint4x8, value);
     case AmdGpu::NumberFormat::Sint:
         return Inst(Opcode::UnpackSint4x8, value);
@@ -1007,11 +1007,11 @@ U32 IREmitter::Pack10_11_11(const AmdGpu::NumberFormat number_format, const Valu
 U32 IREmitter::Pack2_10_10_10(const AmdGpu::NumberFormat number_format, const Value& vector) {
     switch (number_format) {
     case AmdGpu::NumberFormat::Unorm:
+    case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUnorm2_10_10_10, vector);
     case AmdGpu::NumberFormat::Snorm:
         return Inst<U32>(Opcode::PackSnorm2_10_10_10, vector);
     case AmdGpu::NumberFormat::Uint:
-    case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUint2_10_10_10, vector);
     case AmdGpu::NumberFormat::Sint:
         return Inst<U32>(Opcode::PackSint2_10_10_10, vector);
@@ -1023,11 +1023,11 @@ U32 IREmitter::Pack2_10_10_10(const AmdGpu::NumberFormat number_format, const Va
 Value IREmitter::Unpack2_10_10_10(const AmdGpu::NumberFormat number_format, const U32& value) {
     switch (number_format) {
     case AmdGpu::NumberFormat::Unorm:
+    case AmdGpu::NumberFormat::Float:
         return Inst(Opcode::UnpackUnorm2_10_10_10, value);
     case AmdGpu::NumberFormat::Snorm:
         return Inst(Opcode::UnpackSnorm2_10_10_10, value);
     case AmdGpu::NumberFormat::Uint:
-    case AmdGpu::NumberFormat::Float:
         return Inst(Opcode::UnpackUint2_10_10_10, value);
     case AmdGpu::NumberFormat::Sint:
         return Inst(Opcode::UnpackSint2_10_10_10, value);
