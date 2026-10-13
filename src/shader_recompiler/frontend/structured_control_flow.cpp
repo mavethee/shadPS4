@@ -611,7 +611,7 @@ private:
         Tree& tree{parent.children};
         // Try to find the first code block for insertion
         Statement* code_stmt{TryFindForwardBlock(tree.begin(), tree.end())};
-        if (!code_stmt) {
+        if (!code_stmt || !code_stmt->block || !code_stmt->block->ir_block) {
             current_block = block_pool.Create(inst_pool);
             insert_point = current_block->end();
             auto& node{syntax_list.emplace_back()};
@@ -621,6 +621,17 @@ private:
             current_block = code_stmt->block->ir_block;
             insert_point = current_block->begin();
         }
+
+        const auto ensure_current_block = [&]() {
+            if (!current_block) {
+                current_block = block_pool.Create(inst_pool);
+                insert_point = current_block->end();
+                auto& node{syntax_list.emplace_back()};
+                node.type = IR::AbstractSyntaxNode::Type::Block;
+                node.data.block = current_block;
+            }
+        };
+
         for (auto& child : tree) {
             Statement& stmt{child};
             switch (stmt.type) {
@@ -628,6 +639,9 @@ private:
                 // Labels can be ignored
                 break;
             case StatementType::Code: {
+                if (!stmt.block || !stmt.block->ir_block) {
+                    break;
+                }
                 current_block = stmt.block->ir_block;
                 insert_point = current_block->end();
                 for (auto& node : syntax_list) {
@@ -641,11 +655,13 @@ private:
                 break;
             }
             case StatementType::SetVariable: {
+                ensure_current_block();
                 IR::IREmitter ir{*current_block, insert_point};
                 ir.SetGotoVariable(stmt.id, VisitExpr(ir, *stmt.op));
                 break;
             }
             case StatementType::If: {
+                ensure_current_block();
                 IR::Block* const merge_block{MergeBlock(parent, stmt)};
 
                 // Implement if header block
@@ -726,6 +742,7 @@ private:
                 break;
             }
             case StatementType::Break: {
+                ensure_current_block();
                 IR::Block* const skip_block{MergeBlock(parent, stmt)};
 
                 IR::IREmitter ir{*current_block, insert_point};
@@ -743,6 +760,7 @@ private:
                 break;
             }
             case StatementType::Return: {
+                ensure_current_block();
                 IR::Block* return_block{block_pool.Create(inst_pool)};
                 IR::IREmitter{*return_block}.Epilogue();
                 current_block->AddBranch(return_block);
@@ -780,7 +798,7 @@ private:
         const Node end{tree.end()};
         Node forward_node{std::next(Tree::s_iterator_to(stmt))};
         Statement* merge_stmt{TryFindForwardBlock(forward_node, end)};
-        if (!merge_stmt) {
+        if (!merge_stmt || !merge_stmt->block || !merge_stmt->block->ir_block) {
             // Create a merge block we can visit later
             Block* dummy_flow_block = new Block{.is_dummy = true};
             auto* ir_block = block_pool.Create(inst_pool);

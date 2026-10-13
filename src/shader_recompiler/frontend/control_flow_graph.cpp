@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <unordered_set>
+#include <vector>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
@@ -423,8 +425,28 @@ void CFG::LinkBlocks() {
 }
 
 void CFG::RemoveUnreachableBlocks() {
+    if (blocks.empty()) {
+        return;
+    }
+    std::unordered_set<Block*> reachable;
+    std::vector<Block*> worklist;
+    worklist.push_back(&*blocks.begin());
+    reachable.insert(&*blocks.begin());
+
+    while (!worklist.empty()) {
+        Block* curr = worklist.back();
+        worklist.pop_back();
+
+        if (curr->branch_true && reachable.insert(curr->branch_true).second) {
+            worklist.push_back(curr->branch_true);
+        }
+        if (curr->branch_false && reachable.insert(curr->branch_false).second) {
+            worklist.push_back(curr->branch_false);
+        }
+    }
+
     for (auto it = std::next(blocks.begin()); it != blocks.end();) {
-        if (it->num_predecessors == 0) {
+        if (!reachable.contains(&*it)) {
             LOG_WARNING(Render_Recompiler, "Removing unreachable block begin={:#x}", it->begin);
             it = blocks.erase(it);
         } else {

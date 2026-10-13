@@ -249,19 +249,15 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
     constexpr u32 search_limit_bytes = 0x40000; // 256 KB
     const auto* bytes = reinterpret_cast<const u8*>(code);
     const auto sig = BinaryInfo::signature_ref;
-    for (u32 i = 0; i < search_limit_bytes - sizeof(BinaryInfo); ++i) {
+    for (u32 i = 0; i < search_limit_bytes - sizeof(BinaryInfo); i += 4) {
         if (std::memcmp(&bytes[i], sig.data(), sig.size()) == 0) {
             const auto* info = reinterpret_cast<const BinaryInfo*>(&bytes[i]);
             if (info->Valid()) {
-                // If the distance `i` from `code` to `info` is significantly smaller than `info->length`,
-                // then `code` is an interior offset inside a preceding container, not the container start.
-                if (info->length >= sizeof(BinaryInfo) &&
-                    (i + sizeof(BinaryInfo) + 128 < info->length)) {
-                    continue;
-                }
                 const u32* it = reinterpret_cast<const u32*>(&bytes[i]);
-                u32 max_code_dwords =
-                    std::min<u32>(info->length / sizeof(u32), static_cast<u32>(it - code));
+                if (i == 0) {
+                    return {info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash};
+                }
+                const u32 max_code_dwords = static_cast<u32>(it - code);
                 constexpr u32 op_s_endpgm = 0xbf810000;
                 u32 code_dwords = max_code_dwords;
                 for (const u32* search = it - 1; search >= code; --search) {
