@@ -752,10 +752,14 @@ static constexpr std::array formats{
                             vk::Format::eBc4UnormBlock),
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc4, AmdGpu::NumberFormat::Snorm,
                             vk::Format::eBc4SnormBlock),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc4, AmdGpu::NumberFormat::SnormNz,
+                            vk::Format::eBc4SnormBlock),
     // BC5
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc5, AmdGpu::NumberFormat::Unorm,
                             vk::Format::eBc5UnormBlock),
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc5, AmdGpu::NumberFormat::Snorm,
+                            vk::Format::eBc5SnormBlock),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc5, AmdGpu::NumberFormat::SnormNz,
                             vk::Format::eBc5SnormBlock),
     // BC6
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatBc6, AmdGpu::NumberFormat::Unorm,
