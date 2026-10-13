@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
@@ -319,8 +319,7 @@ constexpr std::array<InstFormat, 54> InstructionFormatSOP1 = {{
     {InstClass::ScalarProgFlow, InstCategory::FlowControl, 1, 1, ScalarType::Undefined,
      ScalarType::Undefined},
     // 51 = S_MOV_REGRD_B32
-    {InstClass::ScalarMov, InstCategory::ScalarALU, 1, 1, ScalarType::Uint32,
-     ScalarType::Uint32},
+    {InstClass::ScalarMov, InstCategory::ScalarALU, 1, 1, ScalarType::Uint32, ScalarType::Uint32},
     // 52 = S_ABS_I32
     {InstClass::ScalarAbs, InstCategory::ScalarALU, 1, 1, ScalarType::Sint32, ScalarType::Sint32},
     // 53 = S_MOV_FED_B32
@@ -388,7 +387,7 @@ constexpr std::array<InstFormat, 27> InstructionFormatSOPP = {{
     // 10 = S_BARRIER
     {InstClass::ScalarSync, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 11 = S_SETKILL
-    {InstClass::Undefined, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
+    {InstClass::ScalarSync, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 12 = S_WAITCNT
     {InstClass::ScalarSync, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 13 = S_SETHALT
@@ -636,9 +635,15 @@ constexpr std::array<InstFormat, 60> InstructionFormatVOP2 = {{
     // 53 = V_MUL_F16
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
-    {},
-    {},
-    {},
+    // 54 = V_MAC_F16
+    {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+     ScalarType::Float16},
+    // 55 = V_MADMK_F16
+    {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+     ScalarType::Float16},
+    // 56 = V_MADAK_F16
+    {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+     ScalarType::Float16},
     // 57 = V_MAX_F16
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
@@ -1108,12 +1113,24 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 152 = V_CMPX_CLASS_F32
      {InstClass::VectorFpCmp32, InstCategory::VectorALU, 2, 1, ScalarType::Float32,
       ScalarType::Float32},
-     {},
-     {},
-     {},
-     {},
-     {},
-     {},
+     // 153 = V_CMPX_LT_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
+     // 154 = V_CMPX_EQ_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
+     // 155 = V_CMPX_LE_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
+     // 156 = V_CMPX_GT_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
+     // 157 = V_CMPX_NE_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
+     // 158 = V_CMPX_GE_I16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+      ScalarType::Sint16},
      {},
      // 160 = V_CMP_F_I64
      {InstClass::VectorIntCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Sint64,
@@ -1188,12 +1205,24 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 184 = V_CMPX_CLASS_F64
      {InstClass::VectorFpCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Float64,
       ScalarType::Float64},
-     {},
-     {},
-     {},
-     {},
-     {},
-     {},
+     // 185 = V_CMPX_LT_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 186 = V_CMPX_EQ_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 187 = V_CMPX_LE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 188 = V_CMPX_GT_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 189 = V_CMPX_NE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 190 = V_CMPX_GE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
      {},
      // 192 = V_CMP_F_U32
      {InstClass::VectorIntCmp32, InstCategory::VectorALU, 2, 1, ScalarType::Uint32,
@@ -1497,9 +1526,15 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 309 = V_MUL_F16
      {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
       ScalarType::Float16},
-     {},
-     {},
-     {},
+     // 310 = V_MAC_F16
+     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+      ScalarType::Float16},
+     // 311 = V_MADMK_F16
+     {InstClass::VectorFpArith16, InstCategory::VectorALU, 3, 1, ScalarType::Float16,
+      ScalarType::Float16},
+     // 312 = V_MADAK_F16
+     {InstClass::VectorFpArith16, InstCategory::VectorALU, 3, 1, ScalarType::Float16,
+      ScalarType::Float16},
      // 313 = V_MAX_F16
      {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
       ScalarType::Float16},
@@ -3104,12 +3139,24 @@ constexpr std::array<InstFormat, 248> InstructionFormatVOPC = {{
     // 152 = V_CMPX_CLASS_F32
     {InstClass::VectorFpCmp32, InstCategory::VectorALU, 2, 1, ScalarType::Float32,
      ScalarType::Float32},
-    {},
-    {},
-    {},
-    {},
-    {},
-    {},
+    // 153 = V_CMPX_LT_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
+    // 154 = V_CMPX_EQ_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
+    // 155 = V_CMPX_LE_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
+    // 156 = V_CMPX_GT_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
+    // 157 = V_CMPX_NE_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
+    // 158 = V_CMPX_GE_I16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Sint16,
+     ScalarType::Sint16},
     {},
     // 160 = V_CMP_F_I64
     {InstClass::VectorIntCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Sint64,
@@ -3184,12 +3231,24 @@ constexpr std::array<InstFormat, 248> InstructionFormatVOPC = {{
     // 184 = V_CMPX_CLASS_F64
     {InstClass::VectorFpCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Float64,
      ScalarType::Float64},
-    {},
-    {},
-    {},
-    {},
-    {},
-    {},
+    // 185 = V_CMPX_LT_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
+    // 186 = V_CMPX_EQ_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
+    // 187 = V_CMPX_LE_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
+    // 188 = V_CMPX_GT_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
+    // 189 = V_CMPX_NE_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
+    // 190 = V_CMPX_GE_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
     {},
     // 192 = V_CMP_F_U32
     {InstClass::VectorIntCmp32, InstCategory::VectorALU, 2, 1, ScalarType::Uint32,
@@ -4409,52 +4468,44 @@ constexpr std::array<InstFormat, 1> InstructionFormatEXP = {{
     {InstClass::Exp, InstCategory::Export, 4, 1, ScalarType::Float32, ScalarType::Any},
 }};
 
-template <size_t N>
-static inline InstFormat SafeFormat(const std::array<InstFormat, N>& table, uint32_t opcode) {
-    if (opcode < N) {
-        return table[opcode];
-    }
-    return {};
-}
-
 InstFormat InstructionFormat(InstEncoding encoding, uint32_t opcode) {
     switch (encoding) {
     case InstEncoding::SOP1:
-        return SafeFormat(InstructionFormatSOP1, opcode);
+        return InstructionFormatSOP1[opcode];
     case InstEncoding::SOPP:
-        return SafeFormat(InstructionFormatSOPP, opcode);
+        return InstructionFormatSOPP[opcode];
     case InstEncoding::SOPC:
-        return SafeFormat(InstructionFormatSOPC, opcode);
+        return InstructionFormatSOPC[opcode];
     case InstEncoding::VOP1:
-        return SafeFormat(InstructionFormatVOP1, opcode);
+        return InstructionFormatVOP1[opcode];
     case InstEncoding::VOPC:
-        return SafeFormat(InstructionFormatVOPC, opcode);
+        return InstructionFormatVOPC[opcode];
     case InstEncoding::VOP3:
-        return SafeFormat(InstructionFormatVOP3, opcode);
+        return InstructionFormatVOP3[opcode];
     case InstEncoding::VOP3P:
-        return SafeFormat(InstructionFormatVOP3P, opcode);
+        return InstructionFormatVOP3P[opcode];
     case InstEncoding::EXP:
-        return SafeFormat(InstructionFormatEXP, opcode);
+        return InstructionFormatEXP[opcode];
     case InstEncoding::VINTRP:
-        return SafeFormat(InstructionFormatVINTRP, opcode);
+        return InstructionFormatVINTRP[opcode];
     case InstEncoding::DS:
-        return SafeFormat(InstructionFormatDS, opcode);
+        return InstructionFormatDS[opcode];
     case InstEncoding::MUBUF:
-        return SafeFormat(InstructionFormatMUBUF, opcode);
+        return InstructionFormatMUBUF[opcode];
     case InstEncoding::MTBUF:
-        return SafeFormat(InstructionFormatMTBUF, opcode);
+        return InstructionFormatMTBUF[opcode];
     case InstEncoding::MIMG:
-        return SafeFormat(InstructionFormatMIMG, opcode);
+        return InstructionFormatMIMG[opcode];
     case InstEncoding::SMRD:
-        return SafeFormat(InstructionFormatSMRD, opcode);
+        return InstructionFormatSMRD[opcode];
     case InstEncoding::SOPK:
-        return SafeFormat(InstructionFormatSOPK, opcode);
+        return InstructionFormatSOPK[opcode];
     case InstEncoding::SOP2:
-        return SafeFormat(InstructionFormatSOP2, opcode);
+        return InstructionFormatSOP2[opcode];
     case InstEncoding::VOP2:
-        return SafeFormat(InstructionFormatVOP2, opcode);
+        return InstructionFormatVOP2[opcode];
     default:
-        return {};
+        UNREACHABLE();
     }
     return {};
 }
