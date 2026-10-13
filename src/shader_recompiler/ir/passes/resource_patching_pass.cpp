@@ -116,7 +116,7 @@ public:
             return desc.sharp_fetch == existing.sharp_fetch && desc.is_array == existing.is_array &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index &&
-                   desc.post_op == existing.post_op;
+                   desc.post_op == existing.post_op && desc.is_written == existing.is_written;
         })};
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
@@ -295,7 +295,8 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         case IR::Opcode::ImageSampleRaw: {
             IR::F32 fmaskx = ir.BitCast<IR::F32>(ir.Imm32(0x76543210));
             IR::F32 fmasky = ir.BitCast<IR::F32>(ir.Imm32(0xfedcba98));
-            inst.ReplaceUsesWith(ir.CompositeConstruct(fmaskx, fmasky));
+            inst.ReplaceUsesWith(
+                ir.CompositeConstruct(fmaskx, fmasky, ir.Imm32(0.f), ir.Imm32(0.f)));
             return;
         }
         case IR::Opcode::ImageQueryLod:
