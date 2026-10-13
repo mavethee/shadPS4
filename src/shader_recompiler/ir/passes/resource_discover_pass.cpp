@@ -281,33 +281,18 @@ IR::Inst* FindSharpSource(IR::Inst* handle) {
     return handle;
 }
 
-static void MarkInstructionSharpSource(IR::Inst* inst, int depth = 0) {
-    if (!inst || depth > 8) {
-        return;
-    }
-    if (inst->GetOpcode() == IR::Opcode::ReadConstBuffer) {
-        auto flags = inst->Flags<IR::BufferInstInfo>();
-        flags.sharp_source.Assign(1u);
-        inst->SetFlags(flags);
-        return;
-    }
-    if (inst->GetOpcode() == IR::Opcode::GetUserData ||
-        inst->GetOpcode() == IR::Opcode::ReadConst) {
-        return;
-    }
-    for (size_t i = 0; i < inst->NumArgs(); ++i) {
-        if (auto* arg_inst = inst->Arg(i).TryInst()) {
-            MarkInstructionSharpSource(arg_inst, depth + 1);
-        }
-    }
-}
-
 void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
     // In cases of bindless sharp fetches mark all producer instructions
     // so the extended userdata flattening pass will include them.
     for (size_t i = 0; i < sharp.num_dwords; i++) {
-        if (auto* source = sharp.dwords[i].TryInst()) {
-            MarkInstructionSharpSource(source);
+        IR::Inst* source = sharp.dwords[i].TryInst();
+        if (!source) {
+            continue;
+        }
+        if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+            auto flags = source->Flags<IR::BufferInstInfo>();
+            flags.sharp_source.Assign(1u);
+            source->SetFlags(flags);
         }
     }
 }
