@@ -1014,7 +1014,7 @@ void EmitContext::DefineImagesAndSamplers() {
         images.push_back({
             .data_types = &data_types,
             .id = id,
-            .sampled_type = is_storage ? sampled_type : TypeSampledImage(image_type),
+            .sampled_type = TypeSampledImage(image_type),
             .image_type = image_type,
             .view_type = sharp.GetViewType(image_desc.is_array),
             .is_integer = is_integer,
