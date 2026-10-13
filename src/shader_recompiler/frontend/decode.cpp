@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -93,7 +93,8 @@ bool HasAdditionalLiteral(InstEncoding encoding, Opcode opcode) {
         return opcode == Opcode::S_SETREG_IMM32_B32;
     }
     case InstEncoding::VOP2: {
-        return opcode == Opcode::V_MADMK_F32 || opcode == Opcode::V_MADAK_F32;
+        return opcode == Opcode::V_MADMK_F32 || opcode == Opcode::V_MADAK_F32 ||
+               opcode == Opcode::V_MADMK_F16 || opcode == Opcode::V_MADAK_F16;
     }
     default:
         return false;

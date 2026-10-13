@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "shader_recompiler/frontend/opcodes.h"
@@ -21,6 +21,13 @@ void Translator::EmitFlowControl(const GcnInst& inst) {
         return;
     case Opcode::S_GETPC_B64:
         return S_GETPC_B64(inst);
+    case Opcode::S_SETKILL: {
+        const u16 simm16 = inst.control.sopp.simm;
+        if (simm16 & 1) {
+            ir.Discard();
+        }
+        return;
+    }
     case Opcode::S_SETPC_B64:
     case Opcode::S_WAITCNT:
     case Opcode::S_NOP:
