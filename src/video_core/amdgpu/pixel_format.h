@@ -258,19 +258,13 @@ constexpr NumberFormat RemapNumberFormat(const NumberFormat format, const DataFo
     case NumberFormat::Ubnorm:
         return NumberFormat::Unorm;
     case NumberFormat::Float:
-        switch (data_format) {
-        case DataFormat::Format8:
-        case DataFormat::Format8_8:
-        case DataFormat::Format8_8_8_8:
-        case DataFormat::Format2_10_10_10:
-        case DataFormat::Format10_10_10_2:
-            // 8-bit and 10-bit integer components cannot be float in hardware or Vulkan.
-            // Change to unsigned int to match the component format and pass bits through
-            // unconverted.
+        if (data_format == DataFormat::Format8) {
+            // Games may ask for 8-bit float when they want to access the stencil component
+            // of a depth-stencil image. Change to unsigned int to match the stencil format.
+            // This is also the closest approximation to pass the bits through unconverted.
             return NumberFormat::Uint;
-        default:
-            return format;
         }
+        [[fallthrough]];
     default:
         return format;
     }
