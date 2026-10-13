@@ -254,16 +254,14 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
             const auto* info = reinterpret_cast<const BinaryInfo*>(&bytes[i]);
             if (info->Valid()) {
                 const u32* it = reinterpret_cast<const u32*>(&bytes[i]);
-                if (i == 0) {
-                    return {info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash};
-                }
-                const u32 max_code_dwords = static_cast<u32>(it - code);
-                constexpr u32 op_s_endpgm = 0xbf810000;
-                u32 code_dwords = max_code_dwords;
-                for (const u32* search = it - 1; search >= code; --search) {
-                    if (*search == op_s_endpgm) {
-                        code_dwords = static_cast<u32>(search - code) + 1;
-                        break;
+                u32 code_dwords = info->length / static_cast<u32>(sizeof(u32));
+                if (i > 0) {
+                    constexpr u32 op_s_endpgm = 0xbf810000;
+                    for (const u32* search = it - 1; search >= code; --search) {
+                        if (*search == op_s_endpgm) {
+                            code_dwords = static_cast<u32>(search - code) + 1;
+                            break;
+                        }
                     }
                 }
                 return {info, code_dwords, info->shader_hash};
