@@ -286,7 +286,17 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
             return {start_ptr, pssl_info, pssl_info->length / static_cast<u32>(sizeof(u32)), pssl_info->shader_hash};
         }
         if (found_info) {
-            return {start_ptr, found_info, found_info->length / static_cast<u32>(sizeof(u32)), found_info->shader_hash};
+            const auto* it = reinterpret_cast<const u32*>(found_info);
+            u32 code_dwords = found_info->length / static_cast<u32>(sizeof(u32));
+            if (it > start_ptr) {
+                for (const u32* search = it - 1; search >= start_ptr; --search) {
+                    if (*search == op_s_endpgm) {
+                        code_dwords = static_cast<u32>(search - start_ptr) + 1;
+                        break;
+                    }
+                }
+            }
+            return {start_ptr, found_info, code_dwords, found_info->shader_hash};
         }
         // Scan for s_endpgm from start_ptr
         u32 code_dwords = 0;

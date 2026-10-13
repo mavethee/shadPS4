@@ -171,7 +171,9 @@ constexpr std::array<InstFormat, 22> InstructionFormatSOPK = {{
     // 19 = S_SETREG_B32
     {InstClass::ScalarRegAccess, InstCategory::FlowControl, 0, 1, ScalarType::Uint32,
      ScalarType::Uint32},
-    {},
+    // 20 = S_GETREG_REGRD_B32
+    {InstClass::ScalarProgFlow, InstCategory::FlowControl, 0, 1, ScalarType::Uint32,
+     ScalarType::Uint32},
     // 21 = S_SETREIMM32_B32
     {InstClass::ScalarRegAccess, InstCategory::FlowControl, 0, 1, ScalarType::Uint32,
      ScalarType::Uint32},
@@ -316,7 +318,9 @@ constexpr std::array<InstFormat, 54> InstructionFormatSOP1 = {{
     // 50 = S_CBRANCH_JOIN
     {InstClass::ScalarProgFlow, InstCategory::FlowControl, 1, 1, ScalarType::Undefined,
      ScalarType::Undefined},
-    {},
+    // 51 = S_MOV_REGRD_B32
+    {InstClass::ScalarMov, InstCategory::ScalarALU, 1, 1, ScalarType::Uint32,
+     ScalarType::Uint32},
     // 52 = S_ABS_I32
     {InstClass::ScalarAbs, InstCategory::ScalarALU, 1, 1, ScalarType::Sint32, ScalarType::Sint32},
     // 53 = S_MOV_FED_B32
@@ -383,7 +387,8 @@ constexpr std::array<InstFormat, 27> InstructionFormatSOPP = {{
     {InstClass::ScalarProgFlow, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 10 = S_BARRIER
     {InstClass::ScalarSync, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
-    {},
+    // 11 = S_SETKILL
+    {InstClass::Undefined, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 12 = S_WAITCNT
     {InstClass::ScalarSync, InstCategory::FlowControl, 0, 1, ScalarType::Any, ScalarType::Any},
     // 13 = S_SETHALT
@@ -476,7 +481,7 @@ constexpr std::array<InstFormat, 32> InstructionFormatSMRD = {{
      ScalarType::Undefined},
 }};
 
-constexpr std::array<InstFormat, 59> InstructionFormatVOP2 = {{
+constexpr std::array<InstFormat, 60> InstructionFormatVOP2 = {{
     // 0 = V_CNDMASK_B32
     {InstClass::VectorThreadMask, InstCategory::VectorALU, 2, 1, ScalarType::Uint32,
      ScalarType::Uint32},
@@ -625,7 +630,9 @@ constexpr std::array<InstFormat, 59> InstructionFormatVOP2 = {{
     // 51 = V_SUB_F16
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
-    {},
+    // 52 = V_SUBREV_F16
+    {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+     ScalarType::Float16},
     // 53 = V_MUL_F16
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
@@ -636,6 +643,9 @@ constexpr std::array<InstFormat, 59> InstructionFormatVOP2 = {{
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
     // 58 = V_MIN_F16
+    {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
+     ScalarType::Float16},
+    // 59 = V_LDEXP_F16
     {InstClass::VectorFpArith16, InstCategory::VectorALU, 2, 1, ScalarType::Float16,
      ScalarType::Float16},
 }};
@@ -1132,12 +1142,24 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 168 = V_CMP_CLASS_F64
      {InstClass::VectorFpCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Float64,
       ScalarType::Float64},
-     {},
-     {},
-     {},
-     {},
-     {},
-     {},
+     // 169 = V_CMP_LT_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 170 = V_CMP_EQ_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 171 = V_CMP_LE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 172 = V_CMP_GT_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 173 = V_CMP_NE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
+     // 174 = V_CMP_GE_U16
+     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+      ScalarType::Uint16},
      {},
      // 176 = V_CMPX_F_I64
      {InstClass::VectorIntCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Sint64,
@@ -1732,10 +1754,18 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 406 = V_CVT_F64_U32
      {InstClass::VectorConv, InstCategory::VectorALU, 1, 1, ScalarType::Uint32,
       ScalarType::Float64},
-     {},
-     {},
-     {},
-     {},
+     // 407 = V_TRUNC_F64
+     {InstClass::VectorFpRound64, InstCategory::VectorALU, 1, 1, ScalarType::Float64,
+      ScalarType::Float64},
+     // 408 = V_CEIL_F64
+     {InstClass::VectorFpRound64, InstCategory::VectorALU, 1, 1, ScalarType::Float64,
+      ScalarType::Float64},
+     // 409 = V_RNDNE_F64
+     {InstClass::VectorFpRound64, InstCategory::VectorALU, 1, 1, ScalarType::Float64,
+      ScalarType::Float64},
+     // 410 = V_FLOOR_F64
+     {InstClass::VectorFpRound64, InstCategory::VectorALU, 1, 1, ScalarType::Float64,
+      ScalarType::Float64},
      {},
      {},
      {},
@@ -1852,8 +1882,12 @@ constexpr std::array<InstFormat, 883> InstructionFormatVOP3 = {
      // 452 = V_MOVRELSD_B32
      {InstClass::VectorMovRel, InstCategory::VectorALU, 1, 1, ScalarType::Uint32,
       ScalarType::Uint32},
-     {},
-     {},
+     // 453 = V_LOG_LEGACY_F32
+     {InstClass::VectorFpTran32, InstCategory::VectorALU, 1, 1, ScalarType::Float32,
+      ScalarType::Float32},
+     // 454 = V_EXP_LEGACY_F32
+     {InstClass::VectorFpTran32, InstCategory::VectorALU, 1, 1, ScalarType::Float32,
+      ScalarType::Float32},
      {},
      {},
      {},
@@ -2585,8 +2619,12 @@ constexpr std::array<InstFormat, 86> InstructionFormatVOP1 = {{
     // 68 = V_MOVRELSD_B32
     {InstClass::VectorMovRel, InstCategory::VectorALU, 1, 1, ScalarType::Uint32,
      ScalarType::Uint32},
-    {},
-    {},
+    // 69 = V_LOG_LEGACY_F32
+    {InstClass::VectorFpTran32, InstCategory::VectorALU, 1, 1, ScalarType::Float32,
+     ScalarType::Float32},
+    // 70 = V_EXP_LEGACY_F32
+    {InstClass::VectorFpTran32, InstCategory::VectorALU, 1, 1, ScalarType::Float32,
+     ScalarType::Float32},
     {},
     {},
     {},
@@ -3100,7 +3138,9 @@ constexpr std::array<InstFormat, 248> InstructionFormatVOPC = {{
     // 168 = V_CMP_CLASS_F64
     {InstClass::VectorFpCmp64, InstCategory::VectorALU, 2, 1, ScalarType::Float64,
      ScalarType::Float64},
-    {},
+    // 169 = V_CMP_LT_U16
+    {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
+     ScalarType::Uint16},
     // 170 = V_CMP_EQ_U16
     {InstClass::VectorIntCmp16, InstCategory::VectorALU, 2, 1, ScalarType::Uint16,
      ScalarType::Uint16},
