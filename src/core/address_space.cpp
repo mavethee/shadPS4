@@ -16,11 +16,13 @@
 #include "core/memory.h"
 #include "libraries/error_codes.h"
 
+#include <filesystem>
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__) && defined(ARCH_X86_64)
@@ -733,13 +735,17 @@ struct AddressSpace::Impl {
                  fmt::ptr(user_base + user_size - 1));
 
 #ifdef __APPLE__
-        const auto shm_path = fmt::format("/BackingDmem{}", getpid());
-        backing_fd = shm_open(shm_path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+        // On macOS (Darwin/XNU), shm_open objects have an internal limit where mmap offsets
+        // cannot exceed 256 MB (EINVAL). We use an unlinked temporary sparse file instead,
+        // which supports full 64-bit offsets and is automatically cleaned up when closed.
+        auto temp_path = (std::filesystem::temp_directory_path() /
+                          fmt::format("BackingDmem_{}_XXXXXX", getpid())).string();
+        backing_fd = mkstemp(temp_path.data());
         if (backing_fd < 0) {
-            LOG_CRITICAL(Kernel_Vmm, "shm_open failed: {}", strerror(errno));
+            LOG_CRITICAL(Kernel_Vmm, "mkstemp failed for {}: {}", temp_path, strerror(errno));
             throw std::bad_alloc{};
         }
-        shm_unlink(shm_path.c_str());
+        unlink(temp_path.c_str());
 #else
 #ifndef __FreeBSD__
         madvise(virtual_base, virtual_size, MADV_HUGEPAGE);
@@ -785,6 +791,12 @@ struct AddressSpace::Impl {
         const int flag = phys_addr != -1 ? MAP_SHARED : (MAP_ANONYMOUS | MAP_PRIVATE);
         void* ret = mmap(reinterpret_cast<void*>(virtual_addr), size, prot, MAP_FIXED | flag,
                          handle, host_offset);
+        if (ret == MAP_FAILED) {
+            LOG_CRITICAL(Kernel_Vmm,
+                         "mmap failed for virtual_addr={:#x}, size={:#x}, phys_addr={:#x}, "
+                         "host_offset={:#x}: {}",
+                         virtual_addr, size, phys_addr, host_offset, strerror(errno));
+        }
         ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
         return ret;
     }
