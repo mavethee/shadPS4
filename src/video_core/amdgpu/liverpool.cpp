@@ -198,8 +198,15 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
         }
         case PM4ItOpcode::WaitOnDeCounterDiff: {
             const auto diff = it_body[0];
-            while ((cblock.de_count - cblock.ce_count) >= diff) {
+            u32 yields = 0;
+            while (cblock.ce_count >= cblock.de_count && (cblock.ce_count - cblock.de_count) >= diff) {
                 YIELD_CE();
+                if (++yields > 1000) {
+                    LOG_WARNING(Render,
+                                "WaitOnDeCounterDiff: CE yielded {} times waiting for DE (ce={}, de={}, diff={})",
+                                yields, cblock.ce_count, cblock.de_count, diff);
+                    break;
+                }
             }
             break;
         }
@@ -1004,8 +1011,20 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::WaitOnCeCounter: {
-                while (cblock.ce_count <= cblock.de_count && !ce_task.handle.done()) {
+                u32 spins = 0;
+                while (cblock.ce_count <= cblock.de_count && ce_task.handle && !ce_task.handle.done()) {
+                    const u32 prev_ce = cblock.ce_count;
                     RESUME_GFX(ce_task);
+                    if (cblock.ce_count == prev_ce) {
+                        if (++spins > 1000) {
+                            LOG_WARNING(Render,
+                                        "WaitOnCeCounter: CE task stalled without counter progress (ce={}, de={})",
+                                        cblock.ce_count, cblock.de_count);
+                            break;
+                        }
+                    } else {
+                        spins = 0;
+                    }
                 }
                 break;
             }
