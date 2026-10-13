@@ -195,9 +195,11 @@ public:
     void V_CVT_PKRTZ_F16_F32(const GcnInst& inst);
     void V_ADD_F16(const GcnInst& inst);
     void V_SUB_F16(const GcnInst& inst);
+    void V_SUBREV_F16(const GcnInst& inst);
     void V_MUL_F16(const GcnInst& inst);
     void V_MAX_F16(const GcnInst& inst);
     void V_MIN_F16(const GcnInst& inst);
+    void V_LDEXP_F16(const GcnInst& inst);
 
     // VOP1
     void V_MOV(const GcnInst& inst);
