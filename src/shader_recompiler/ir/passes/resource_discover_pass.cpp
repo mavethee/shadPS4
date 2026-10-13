@@ -190,7 +190,9 @@ AnisoLod0Result CheckDisableAnisoLod0Pattern(IR::Value value) {
     }
 
     auto* prod0_arg0 = prod0->Arg(0).Inst();
-    ASSERT(prod0_arg0->GetOpcode() != IR::Opcode::Phi);
+    if (prod0_arg0->GetOpcode() == IR::Opcode::Phi) {
+        return {value, {}, false};
+    }
 
     // The bits range is for lods (note that constants are changed after constant propagation pass)
     if (prod0_arg0->GetOpcode() != IR::Opcode::BitFieldUExtract ||
@@ -207,7 +209,9 @@ AnisoLod0Result CheckDisableAnisoLod0Pattern(IR::Value value) {
 
     // We're working on the first dword of S#
     auto* prod2 = inst->Arg(2).Inst();
-    ASSERT(prod2->GetOpcode() != IR::Opcode::Phi);
+    if (prod2->GetOpcode() == IR::Opcode::Phi) {
+        return {value, {}, false};
+    }
     return {inst->Arg(2), prod0_arg0->Arg(0), true};
 }
 
@@ -274,23 +278,36 @@ SamplerPatchResult CheckClearAnisoRatioAndThresholdPattern(IR::Value value) {
 }
 
 IR::Inst* FindSharpSource(IR::Inst* handle) {
-    ASSERT(IsSharpSource(handle));
     return handle;
+}
+
+static void MarkInstructionSharpSource(IR::Inst* inst, int depth = 0) {
+    if (!inst || depth > 8) {
+        return;
+    }
+    if (inst->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+        auto flags = inst->Flags<IR::BufferInstInfo>();
+        flags.sharp_source.Assign(1u);
+        inst->SetFlags(flags);
+        return;
+    }
+    if (inst->GetOpcode() == IR::Opcode::GetUserData ||
+        inst->GetOpcode() == IR::Opcode::ReadConst) {
+        return;
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (auto* arg_inst = inst->Arg(i).TryInst()) {
+            MarkInstructionSharpSource(arg_inst, depth + 1);
+        }
+    }
 }
 
 void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
     // In cases of bindless sharp fetches mark all producer instructions
     // so the extended userdata flattening pass will include them.
     for (size_t i = 0; i < sharp.num_dwords; i++) {
-        IR::Inst* source = sharp.dwords[i].TryInst();
-        if (!source) {
-            continue;
-        }
-        ASSERT(IsSharpSource(source));
-        if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
-            auto flags = source->Flags<IR::BufferInstInfo>();
-            flags.sharp_source.Assign(1u);
-            source->SetFlags(flags);
+        if (auto* source = sharp.dwords[i].TryInst()) {
+            MarkInstructionSharpSource(source);
         }
     }
 }
