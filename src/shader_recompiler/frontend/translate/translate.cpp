@@ -442,7 +442,10 @@ T Translator::GetSrc(const InstOperand& operand) {
         }
         break;
     default:
-        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
+        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
+                    std::to_underlying(operand.field));
+        value = get_imm(0U);
+        break;
     }
 
     if constexpr (is_float) {
@@ -576,7 +579,10 @@ T Translator::GetSrc16(const InstOperand& operand) {
         }
         break;
     default:
-        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
+        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
+                    std::to_underlying(operand.field));
+        value = get_imm(0U);
+        break;
     }
 
     if constexpr (is_float) {
@@ -698,7 +704,10 @@ IR::F32 Translator::GetSrcMix(const InstOperand& operand) {
         value = get_imm(static_cast<float>(1.0f / (2.0f * std::numbers::pi)));
         break;
     default:
-        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
+        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
+                    std::to_underlying(operand.field));
+        value = get_imm(0.f);
+        break;
     }
 
     if (operand.input_modifier.neg_hi) {
@@ -799,7 +808,10 @@ T Translator::GetSrc64(const InstOperand& operand) {
         }
         break;
     default:
-        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
+        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
+                    std::to_underlying(operand.field));
+        value = get_imm(0ULL);
+        break;
     }
 
     if constexpr (is_float) {
@@ -938,7 +950,10 @@ pk_type<T> Translator::GetSrcPk(const InstOperand& operand) {
         value = extract(ir.GetVccLo());
         break;
     default:
-        UNREACHABLE_MSG("Unexpected operand: {}", std::to_underlying(operand.field));
+        LOG_WARNING(Render_Recompiler, "Unexpected operand {}, treating as 0 (hardware reserved fallback)",
+                    std::to_underlying(operand.field));
+        value = get_imm(0U);
+        break;
     }
 
     if constexpr (is_float) {
