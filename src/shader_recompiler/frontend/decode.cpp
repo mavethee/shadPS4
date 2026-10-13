@@ -112,7 +112,16 @@ GcnInst GcnDecodeContext::decodeInstruction(GcnCodeSlice& code) {
     const uint32_t token = code.at(0);
 
     InstEncoding encoding = GetInstructionEncoding(token);
-    ASSERT_MSG(encoding != InstEncoding::ILLEGAL, "illegal encoding: {:#x}", token);
+    if (encoding == InstEncoding::ILLEGAL) {
+        LOG_WARNING(Render_Recompiler,
+                    "Illegal instruction encoding: {:#x}; treating as termination", token);
+        m_instruction = GcnInst();
+        m_instruction.opcode = Opcode::S_ENDPGM;
+        m_instruction.encoding = InstEncoding::SOPP;
+        m_instruction.length = sizeof(u32);
+        code.readu32();
+        return m_instruction;
+    }
     uint32_t encodingLen = getEncodingLength(encoding);
 
     // Clear the instruction
