@@ -45,7 +45,9 @@ void EmitControlFlowGraph(IR::Program& program, Pools& pools, Gcn::CFG& cfg,
         program.blocks.push_back(ir_block);
     }
     translator.EmitPrologue(program.blocks.front());
-    ASSERT_MSG(!program.info.translation_failed, "Shader translation has failed");
+    if (program.info.translation_failed) {
+        LOG_ERROR(Render_Recompiler, "Shader translation had errors, attempting best-effort emission");
+    }
     for (auto& block : cfg) {
         auto* ir_block = block.ir_block;
         if (block.branch_true) {

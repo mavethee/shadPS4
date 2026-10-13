@@ -253,6 +253,12 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
         if (std::memcmp(&bytes[i], sig.data(), sig.size()) == 0) {
             const auto* info = reinterpret_cast<const BinaryInfo*>(&bytes[i]);
             if (info->Valid()) {
+                // If the distance `i` from `code` to `info` is significantly smaller than `info->length`,
+                // then `code` is an interior offset inside a preceding container, not the container start.
+                if (info->length >= sizeof(BinaryInfo) &&
+                    (i + sizeof(BinaryInfo) + 128 < info->length)) {
+                    continue;
+                }
                 const u32* it = reinterpret_cast<const u32*>(&bytes[i]);
                 u32 max_code_dwords =
                     std::min<u32>(info->length / sizeof(u32), static_cast<u32>(it - code));
