@@ -230,6 +230,7 @@ struct ComputeProgram {
 };
 
 struct BinaryLookupResult {
+    const u32* code_start{};
     const BinaryInfo* info{};
     u32 code_size_dwords{};
     u64 fallback_hash{};
@@ -240,39 +241,86 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
         return {};
     }
     constexpr u32 token_mov_vcchi = 0xBEEB03FF;
+    constexpr u32 op_s_endpgm = 0xbf810000;
+    constexpr u32 max_scan_dwords = 0x10000; // 64K dwords = 256 KB
+
+    // 1. Fast path: The code starts directly with the standard Sony PSSL preamble.
     if (code[0] == token_mov_vcchi) {
         const auto* info = std::bit_cast<const BinaryInfo*>(code + (code[1] + 1) * 2);
         if (info->Valid()) {
-            return {info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash};
+            return {code, info, info->length / static_cast<u32>(sizeof(u32)), info->shader_hash};
         }
     }
+
+    // 2. Search for Sony OrbShdr signature in the header / container.
     constexpr u32 search_limit_bytes = 0x40000; // 256 KB
     const auto* bytes = reinterpret_cast<const u8*>(code);
     const auto sig = BinaryInfo::signature_ref;
+    const BinaryInfo* found_info = nullptr;
+    u32 info_byte_offset = 0;
     for (u32 i = 0; i < search_limit_bytes - sizeof(BinaryInfo); i += 4) {
         if (std::memcmp(&bytes[i], sig.data(), sig.size()) == 0) {
-            const auto* info = reinterpret_cast<const BinaryInfo*>(&bytes[i]);
-            if (info->Valid()) {
-                const u32* it = reinterpret_cast<const u32*>(&bytes[i]);
-                u32 code_dwords = info->length / static_cast<u32>(sizeof(u32));
-                if (i > 0) {
-                    constexpr u32 op_s_endpgm = 0xbf810000;
-                    for (const u32* search = it - 1; search >= code; --search) {
-                        if (*search == op_s_endpgm) {
-                            code_dwords = static_cast<u32>(search - code) + 1;
-                            break;
-                        }
-                    }
-                }
-                return {info, code_dwords, info->shader_hash};
+            const auto* cand = reinterpret_cast<const BinaryInfo*>(&bytes[i]);
+            if (cand->Valid()) {
+                found_info = cand;
+                info_byte_offset = i;
+                break;
             }
         }
     }
 
-    // Fallback: If no Sony OrbShdr signature was found (e.g. raw or stripped compute shader),
-    // find the program boundary by scanning for S_ENDPGM (0xBF810000) and hash the instructions.
-    constexpr u32 op_s_endpgm = 0xbf810000;
-    constexpr u32 max_scan_dwords = 0x10000; // 64K dwords = 256 KB
+    // 3. Scan forward for the actual start of instructions (s_mov_b32 vcc_hi, #imm).
+    // In Decima Engine (and some containerized shaders), code points to the container base
+    // while instructions start at an aligned offset (e.g. 0x100, 0x200, 0xb00).
+    const u32* start_ptr = nullptr;
+    for (u32 i = 0; i < max_scan_dwords; ++i) {
+        if (code[i] == token_mov_vcchi) {
+            start_ptr = &code[i];
+            break;
+        }
+    }
+
+    if (start_ptr) {
+        const auto* pssl_info = std::bit_cast<const BinaryInfo*>(start_ptr + (start_ptr[1] + 1) * 2);
+        if (pssl_info->Valid()) {
+            return {start_ptr, pssl_info, pssl_info->length / static_cast<u32>(sizeof(u32)), pssl_info->shader_hash};
+        }
+        if (found_info) {
+            return {start_ptr, found_info, found_info->length / static_cast<u32>(sizeof(u32)), found_info->shader_hash};
+        }
+        // Scan for s_endpgm from start_ptr
+        u32 code_dwords = 0;
+        for (u32 i = 0; start_ptr + i < code + max_scan_dwords; ++i) {
+            if (start_ptr[i] == op_s_endpgm) {
+                code_dwords = i + 1;
+                break;
+            }
+        }
+        if (code_dwords == 0) {
+            code_dwords = 1;
+        }
+        u64 hash = 0xcbf29ce484222325ULL;
+        for (u32 i = 0; i < code_dwords; ++i) {
+            hash ^= start_ptr[i];
+            hash *= 0x100000001b3ULL;
+        }
+        return {start_ptr, nullptr, code_dwords, hash};
+    }
+
+    // 4. No token_mov_vcchi found: Raw instructions starting at code[0].
+    if (found_info && info_byte_offset > 0) {
+        const u32* it = reinterpret_cast<const u32*>(&bytes[info_byte_offset]);
+        u32 code_dwords = found_info->length / static_cast<u32>(sizeof(u32));
+        for (const u32* search = it - 1; search >= code; --search) {
+            if (*search == op_s_endpgm) {
+                code_dwords = static_cast<u32>(search - code) + 1;
+                break;
+            }
+        }
+        return {code, found_info, code_dwords, found_info->shader_hash};
+    }
+
+    // 5. Fallback: Raw or stripped shader without OrbShdr or vcchi preamble.
     u32 code_dwords = 0;
     for (u32 i = 0; i < max_scan_dwords; ++i) {
         if (code[i] == op_s_endpgm) {
@@ -283,14 +331,12 @@ static constexpr BinaryLookupResult SearchBinaryInfo(const u32* code) {
     if (code_dwords == 0) {
         code_dwords = 1;
     }
-
-    // 64-bit FNV-1a hash of instructions
     u64 hash = 0xcbf29ce484222325ULL;
     for (u32 i = 0; i < code_dwords; ++i) {
         hash ^= code[i];
         hash *= 0x100000001b3ULL;
     }
-    return {nullptr, code_dwords, hash};
+    return {code, nullptr, code_dwords, hash};
 }
 
 static constexpr Shader::ShaderParams GetParams(const auto& sh) {
@@ -303,9 +349,10 @@ static constexpr Shader::ShaderParams GetParams(const auto& sh) {
         };
     }
     const auto lookup = SearchBinaryInfo(code);
+    const u32* start = lookup.code_start ? lookup.code_start : code;
     return {
         .user_data = sh.user_data,
-        .code = std::span{code, lookup.code_size_dwords},
+        .code = std::span{start, lookup.code_size_dwords},
         .hash = lookup.info ? lookup.info->shader_hash : lookup.fallback_hash,
     };
 }
