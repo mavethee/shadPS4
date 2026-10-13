@@ -273,8 +273,7 @@ constexpr NumberFormat RemapNumberFormat(const NumberFormat format, const DataFo
 constexpr CompMapping RemapSwizzle(const DataFormat format, const CompMapping swizzle) {
     switch (format) {
     case DataFormat::Format1_5_5_5:
-    case DataFormat::Format11_11_10:
-    case DataFormat::Format10_10_10_2: {
+    case DataFormat::Format11_11_10: {
         CompMapping result;
         result.r = swizzle.b;
         result.g = swizzle.g;
