@@ -649,13 +649,13 @@ Frame* Presenter::PrepareLastFrame() {
 static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat format) {
     switch (format) {
     case Libraries::VideoOut::PixelFormat::A8B8G8R8Srgb:
-        return vk::Format::eR8G8B8A8Srgb;
-    case Libraries::VideoOut::PixelFormat::A8R8G8B8Srgb:
         return vk::Format::eB8G8R8A8Srgb;
+    case Libraries::VideoOut::PixelFormat::A8R8G8B8Srgb:
+        return vk::Format::eR8G8B8A8Srgb;
     case Libraries::VideoOut::PixelFormat::A2R10G10B10:
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb:
     case Libraries::VideoOut::PixelFormat::A2R10G10B10Bt2020Pq:
-        return vk::Format::eA2R10G10B10UnormPack32;
+        return vk::Format::eA2B10G10R10UnormPack32;
     default:
         break;
     }
