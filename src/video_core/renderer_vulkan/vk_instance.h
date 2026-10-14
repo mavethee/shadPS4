@@ -428,6 +428,21 @@ public:
         return properties.limits.maxFramebufferHeight;
     }
 
+    /// Returns the maximum image array layers supported by the device.
+    u32 GetMaxImageArrayLayers() const {
+        return properties.limits.maxImageArrayLayers;
+    }
+
+    /// Returns the maximum 2D image dimension supported by the device.
+    u32 GetMaxImageDimension2D() const {
+        return properties.limits.maxImageDimension2D;
+    }
+
+    /// Returns the maximum 3D image dimension supported by the device.
+    u32 GetMaxImageDimension3D() const {
+        return properties.limits.maxImageDimension3D;
+    }
+
     /// Returns the maximum number of samplers that can be allocated at once.
     u32 GetMaxSamplerAllocationCount() const {
         if (driver_id == vk::DriverId::eMesaKosmickrisp) {

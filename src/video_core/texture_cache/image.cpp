@@ -199,16 +199,27 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
                             : vk::SampleCountFlagBits::e1;
 
     const bool is_3d = ConvertImageType(info.type) == vk::ImageType::e3D;
-    info.size.width = std::max<u32>(info.size.width, 1);
-    info.size.height = std::max<u32>(info.size.height, 1);
-    info.size.depth = is_3d ? std::max<u32>(info.size.depth, 1) : 1;
+    const u32 max_w = is_3d ? instance.GetMaxImageDimension3D() : instance.GetMaxImageDimension2D();
+    const u32 max_h = is_3d ? instance.GetMaxImageDimension3D() : instance.GetMaxImageDimension2D();
+    const u32 max_d = is_3d ? instance.GetMaxImageDimension3D() : 1u;
+
+    info.size.width = std::clamp<u32>(info.size.width, 1, max_w);
+    info.size.height = std::clamp<u32>(info.size.height, 1, max_h);
+    info.size.depth = is_3d ? std::clamp<u32>(info.size.depth, 1, max_d) : 1;
 
     const u32 max_mip_levels = std::max<u32>(
         1u, std::bit_width(std::max({info.size.width, info.size.height, info.size.depth})));
     info.resources.levels = (info.num_samples > 1)
                                 ? 1
                                 : std::clamp<u32>(info.resources.levels, 1, max_mip_levels);
-    info.resources.layers = is_3d ? 1 : std::max<u32>(info.resources.layers, 1);
+
+    const u32 device_max_layers = is_3d ? 1 : instance.GetMaxImageArrayLayers();
+#ifdef __APPLE__
+    const u32 max_layers = std::min<u32>(device_max_layers, 2048u);
+#else
+    const u32 max_layers = device_max_layers;
+#endif
+    info.resources.layers = is_3d ? 1 : std::clamp<u32>(info.resources.layers, 1, max_layers);
 #ifdef __APPLE__
     if (info.num_samples > 1) {
         info.resources.layers = 1;
