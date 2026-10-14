@@ -1399,6 +1399,9 @@ void MemoryManager::EnsureStackGuardHeadroom(VAddr stack_base, u64 headroom_size
         return;
     }
     std::scoped_lock lk{mutex, unmap_mutex};
+    if (!IsValidMapping(stack_base - 1)) {
+        return;
+    }
     auto it = FindVMA(stack_base - 1);
     if (it != vma_map.end() && it->second.type == VMAType::Reserved) {
         const auto& vma = it->second;
@@ -1416,10 +1419,16 @@ void MemoryManager::EnsureStackGuardHeadroom(VAddr stack_base, u64 headroom_size
 
 bool MemoryManager::TryCommitStackGuard(VAddr fault_addr) {
     std::scoped_lock lk{mutex, unmap_mutex};
+    if (!IsValidMapping(fault_addr)) {
+        return false;
+    }
     auto it = FindVMA(fault_addr);
     if (it != vma_map.end()) {
         const VAddr page_addr = Common::AlignDown(fault_addr, 16_KB);
         if (it->second.type == VMAType::Reserved) {
+            if (it->second.is_guard_committed) {
+                return false;
+            }
             auto carved_it = CarveVMA(page_addr, 16_KB);
             carved_it->second.is_guard_committed = true;
             impl.CommitGuardPages(page_addr, 16_KB);
