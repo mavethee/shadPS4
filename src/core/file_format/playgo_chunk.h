@@ -101,7 +101,7 @@ public:
     OrbisPlayGoHandle handle = 0;
     OrbisPlayGoChunkId id = 0;
     OrbisPlayGoLocus locus = OrbisPlayGoLocus::NotDownloaded;
-    OrbisPlayGoInstallSpeed speed = OrbisPlayGoInstallSpeed::Trickle;
+    OrbisPlayGoInstallSpeed speed = OrbisPlayGoInstallSpeed::Full;
     s64 speed_tick = 0;
     OrbisPlayGoEta eta = 0;
     OrbisPlayGoLanguageMask langMask = 0;
