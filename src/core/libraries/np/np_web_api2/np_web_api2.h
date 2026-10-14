@@ -11,6 +11,10 @@ namespace Core::Loader {
 class SymbolsResolver;
 }
 
+namespace Libraries::Np::NpWebApi {
+struct PushEventInput;
+}
+
 namespace Libraries::Np::NpWebApi2 {
 
 struct OrbisNpWebApi2IntInitializeArgs {
