@@ -750,6 +750,211 @@ static void GenerateNegatedScalarCompare(void* address, const ZydisDecodedInstru
 }
 #endif
 
+static bool FilterRosetta(const ZydisDecodedOperand*) {
+#if defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+static std::pair<Xbyak::Reg64, Xbyak::Reg64> PickScratchRegisters(const ZydisDecodedOperand& mem_op) {
+    const auto base = mem_op.mem.base;
+    const auto index = mem_op.mem.index;
+
+    auto GetRegIdx = [](ZydisRegister reg) -> int {
+        if (reg >= ZYDIS_REGISTER_EAX && reg <= ZYDIS_REGISTER_R15D) {
+            return reg - ZYDIS_REGISTER_EAX;
+        }
+        if (reg >= ZYDIS_REGISTER_RAX && reg <= ZYDIS_REGISTER_R15) {
+            return reg - ZYDIS_REGISTER_RAX;
+        }
+        return -1;
+    };
+
+    const int base_idx = GetRegIdx(base);
+    const int index_idx = GetRegIdx(index);
+
+    static constexpr std::array<ZydisRegister, 14> candidates = {
+        ZYDIS_REGISTER_RAX, ZYDIS_REGISTER_RCX, ZYDIS_REGISTER_RDX, ZYDIS_REGISTER_RDI,
+        ZYDIS_REGISTER_RSI, ZYDIS_REGISTER_R8,  ZYDIS_REGISTER_R9,  ZYDIS_REGISTER_R10,
+        ZYDIS_REGISTER_R11, ZYDIS_REGISTER_RBX, ZYDIS_REGISTER_R12, ZYDIS_REGISTER_R13,
+        ZYDIS_REGISTER_R14, ZYDIS_REGISTER_R15
+    };
+
+    std::optional<ZydisRegister> reg1;
+    std::optional<ZydisRegister> reg2;
+    for (auto reg : candidates) {
+        const int candidate_idx = GetRegIdx(reg);
+        if (candidate_idx != base_idx && candidate_idx != index_idx) {
+            if (!reg1) {
+                reg1 = reg;
+            } else if (!reg2) {
+                reg2 = reg;
+                break;
+            }
+        }
+    }
+    ASSERT(reg1.has_value() && reg2.has_value());
+    return {ZydisToXbyakRegister(*reg1).cvt64(), ZydisToXbyakRegister(*reg2).cvt64()};
+}
+
+static void GenerateVMASKMOV(void* address, const ZydisDecodedInstruction& instruction,
+                             const ZydisDecodedOperand* operands, Xbyak::CodeGenerator& c) {
+    const bool is_double = (instruction.mnemonic == ZYDIS_MNEMONIC_VMASKMOVPD);
+    const bool is_store = (operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY);
+
+    const auto& mem_op = is_store ? operands[0] : operands[2];
+    const auto& mask_op = operands[1];
+    const auto& reg_op = is_store ? operands[2] : operands[0];
+
+    ASSERT_MSG(mem_op.type == ZYDIS_OPERAND_TYPE_MEMORY, "Expected memory operand");
+    ASSERT_MSG(mask_op.type == ZYDIS_OPERAND_TYPE_REGISTER, "Expected mask register operand");
+    ASSERT_MSG(reg_op.type == ZYDIS_OPERAND_TYPE_REGISTER, "Expected src/dst register operand");
+
+    const auto raw_mask = ZydisToXbyakRegisterOperand(mask_op);
+    const auto raw_reg = ZydisToXbyakRegisterOperand(reg_op);
+
+    const bool is_ymm = raw_mask.isYMM() || raw_reg.isYMM();
+    const int num_elements = is_double ? (is_ymm ? 4 : 2) : (is_ymm ? 8 : 4);
+
+    const Xbyak::Xmm xmm_mask(raw_mask.getIdx());
+    const Xbyak::Ymm ymm_mask(raw_mask.getIdx());
+    const Xbyak::Xmm xmm_reg(raw_reg.getIdx());
+    const Xbyak::Ymm ymm_reg(raw_reg.getIdx());
+
+    // Find an unused XMM register to serve as temp_xmm if YMM is used
+    std::array<bool, 16> taken_vecs = {};
+    taken_vecs[raw_mask.getIdx()] = true;
+    taken_vecs[raw_reg.getIdx()] = true;
+    auto it_unused = std::find(taken_vecs.begin(), taken_vecs.end(), false);
+    ASSERT(it_unused != taken_vecs.end());
+    const Xbyak::Xmm temp_xmm(it_unused - taken_vecs.begin());
+
+    auto [scratch_addr, scratch_mask] = PickScratchRegisters(mem_op);
+
+    // Setup stack frame: red zone (128 bytes) + 16 bytes for temp_xmm if YMM
+    const u32 stack_space = 128 + (is_ymm ? 16 : 0);
+    c.lea(rsp, ptr[rsp - stack_space]);
+    if (is_ymm) {
+        c.vmovups(ptr[rsp], temp_xmm);
+    }
+    c.pushfq();
+    c.push(scratch_addr);
+    c.push(scratch_mask);
+
+    // Total displacement from guest RSP:
+    const u32 rsp_offset = stack_space + 8 * 3;
+
+    // Compute memory operand address into scratch_addr
+    if (mem_op.mem.base == ZYDIS_REGISTER_RIP) {
+        const u64 target =
+            reinterpret_cast<u64>(address) + instruction.length + mem_op.mem.disp.value;
+        c.mov(scratch_addr, target);
+    } else {
+        ZydisDecodedOperand op = mem_op;
+        if (op.mem.base == ZYDIS_REGISTER_RSP) {
+            op.mem.disp.size = 32;
+            op.mem.disp.value += rsp_offset;
+        }
+        Xbyak::Address mem = ZydisToXbyakMemoryOperand(op);
+        c.lea(scratch_addr, mem);
+    }
+
+    // Extract mask bits into scratch_mask (32-bit)
+    if (!is_double) {
+        if (is_ymm) {
+            c.vmovmskps(scratch_mask.cvt32(), ymm_mask);
+        } else {
+            c.vmovmskps(scratch_mask.cvt32(), xmm_mask);
+        }
+    } else {
+        if (is_ymm) {
+            c.vmovmskpd(scratch_mask.cvt32(), ymm_mask);
+        } else {
+            c.vmovmskpd(scratch_mask.cvt32(), xmm_mask);
+        }
+    }
+
+    if (is_store) {
+        // STORE: conditionally write active elements
+        for (int i = 0; i < num_elements; ++i) {
+            Xbyak::Label skip_elem;
+            c.test(scratch_mask.cvt32(), 1 << i);
+            c.jz(skip_elem);
+
+            if (!is_double) {
+                // Single precision (32-bit float)
+                const u32 offset = i * 4;
+                if (i < 4) {
+                    c.vpextrd(ptr[scratch_addr + offset], xmm_reg, i);
+                } else {
+                    if (i == 4) {
+                        c.vextractf128(temp_xmm, ymm_reg, 1);
+                    }
+                    c.vpextrd(ptr[scratch_addr + offset], temp_xmm, i - 4);
+                }
+            } else {
+                // Double precision (64-bit float)
+                const u32 offset = i * 8;
+                if (i < 2) {
+                    c.vpextrq(ptr[scratch_addr + offset], xmm_reg, i);
+                } else {
+                    if (i == 2) {
+                        c.vextractf128(temp_xmm, ymm_reg, 1);
+                    }
+                    c.vpextrq(ptr[scratch_addr + offset], temp_xmm, i - 2);
+                }
+            }
+            c.L(skip_elem);
+        }
+    } else {
+        // LOAD: conditionally read active elements into destination, zero inactive elements
+        if (is_ymm) {
+            c.vxorps(ymm_reg, ymm_reg, ymm_reg);
+            c.vxorps(temp_xmm, temp_xmm, temp_xmm);
+        } else {
+            c.vxorps(xmm_reg, xmm_reg, xmm_reg);
+        }
+
+        for (int i = 0; i < num_elements; ++i) {
+            Xbyak::Label skip_elem;
+            c.test(scratch_mask.cvt32(), 1 << i);
+            c.jz(skip_elem);
+
+            if (!is_double) {
+                const u32 offset = i * 4;
+                if (i < 4) {
+                    c.vpinsrd(xmm_reg, xmm_reg, ptr[scratch_addr + offset], i);
+                } else {
+                    c.vpinsrd(temp_xmm, temp_xmm, ptr[scratch_addr + offset], i - 4);
+                }
+            } else {
+                const u32 offset = i * 8;
+                if (i < 2) {
+                    c.vpinsrq(xmm_reg, xmm_reg, ptr[scratch_addr + offset], i);
+                } else {
+                    c.vpinsrq(temp_xmm, temp_xmm, ptr[scratch_addr + offset], i - 2);
+                }
+            }
+            c.L(skip_elem);
+        }
+
+        if (is_ymm) {
+            c.vinsertf128(ymm_reg, ymm_reg, temp_xmm, 1);
+        }
+    }
+
+    // Restore scratch registers and stack
+    c.pop(scratch_mask);
+    c.pop(scratch_addr);
+    c.popfq();
+    if (is_ymm) {
+        c.vmovups(temp_xmm, ptr[rsp]);
+    }
+    c.lea(rsp, ptr[rsp + stack_space]);
+}
+
 using PatchFilter = bool (*)(const ZydisDecodedOperand*);
 using InstructionGenerator = void (*)(void*, const ZydisDecodedInstruction&,
                                       const ZydisDecodedOperand*, Xbyak::CodeGenerator&);
@@ -782,6 +987,8 @@ static const std::unordered_map<ZydisMnemonic, std::vector<PatchInfo>> Patches =
     {ZYDIS_MNEMONIC_VRSQRTPS, {{FilterIntelCPU, GenerateVRSQRTPS, true}}},
     {ZYDIS_MNEMONIC_RCPPS, {{FilterIntelCPU, GenerateRCPPS, true}}},
     {ZYDIS_MNEMONIC_VRCPPS, {{FilterIntelCPU, GenerateVRCPPS, true}}},
+    {ZYDIS_MNEMONIC_VMASKMOVPS, {{FilterRosetta, GenerateVMASKMOV, true}}},
+    {ZYDIS_MNEMONIC_VMASKMOVPD, {{FilterRosetta, GenerateVMASKMOV, true}}},
 
 #if defined(__APPLE__)
     // Rosetta 2
