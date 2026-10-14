@@ -49,14 +49,17 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     }
 
     const auto& db = render_state.depth_stencil_attachment;
+    float clear_depth = std::bit_cast<float>(db.clear_value[0]);
+    if (!instance.IsDepthRangeUnrestrictedSupported()) {
+        clear_depth = std::clamp(clear_depth, 0.0f, 1.0f);
+    }
     const vk::RenderingAttachmentInfo depth_attachment = {
         .imageView = db.image_view,
         .imageLayout = db.image_layout,
         .loadOp = db.depth_clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
         .storeOp = vk::AttachmentStoreOp::eStore,
         .clearValue =
-            vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{.depth = std::bit_cast<float>(
-                                                                          db.clear_value[0])}},
+            vk::ClearValue{.depthStencil = vk::ClearDepthStencilValue{.depth = clear_depth}},
     };
     const vk::RenderingAttachmentInfo stencil_attachment = {
         .imageView = db.image_view,

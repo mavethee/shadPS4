@@ -1723,9 +1723,9 @@ void Rasterizer::UpdateViewportScissorState() const {
         }
 
         if (!instance.IsDepthRangeUnrestrictedSupported()) {
-            // Unrestricted depth range not supported by device. Restrict to valid range.
-            viewport.minDepth = std::max(viewport.minDepth, 0.f);
-            viewport.maxDepth = std::min(viewport.maxDepth, 1.f);
+            // Unrestricted depth range not supported by device. Restrict to valid range [0, 1].
+            viewport.minDepth = std::clamp(viewport.minDepth, 0.f, 1.f);
+            viewport.maxDepth = std::clamp(viewport.maxDepth, 0.f, 1.f);
         }
 
         if (regs.IsClipDisabled()) {
