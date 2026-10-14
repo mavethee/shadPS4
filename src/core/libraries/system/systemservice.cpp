@@ -1981,6 +1981,13 @@ s32 PS4_SYSV_ABI sceSystemServiceParamGetInt(OrbisSystemServiceParamId param_id,
         *value = (tm_val.tm_isdst > 0) ? 1 : 0;
         break;
     }
+    case OrbisSystemServiceParamId::ClosedCaption:
+    case OrbisSystemServiceParamId::ScreenReader:
+    case OrbisSystemServiceParamId::HighContrast:
+    case OrbisSystemServiceParamId::ScrollSpeed:
+    case OrbisSystemServiceParamId::BoldText:
+        *value = 0;
+        break;
     case OrbisSystemServiceParamId::GameParentalLevel:
         *value = u32(OrbisSystemParamGameParentalLevel::Off);
         break;

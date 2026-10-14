@@ -23,6 +23,11 @@ enum class OrbisSystemServiceParamId {
     Summertime = 5,
     SystemName = 6,
     GameParentalLevel = 7,
+    ClosedCaption = 100,
+    ScreenReader = 200,
+    HighContrast = 202,
+    ScrollSpeed = 203,
+    BoldText = 204,
     EnterButtonAssign = 1000,
 };
 
