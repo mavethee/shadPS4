@@ -656,8 +656,18 @@ static constexpr std::array formats{
     // 10_11_11
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Float,
                             vk::Format::eB10G11R11UfloatPack32),
-    // 11_11_10 - Remapped to 10_11_11.
-    // 10_10_10_2 - Remapped to 2_10_10_10.
+    // 11_11_10
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format11_11_10, AmdGpu::NumberFormat::Float,
+                            vk::Format::eB10G11R11UfloatPack32),
+    // 10_10_10_2
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_10_10_2, AmdGpu::NumberFormat::Unorm,
+                            vk::Format::eA2B10G10R10UnormPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_10_10_2, AmdGpu::NumberFormat::Snorm,
+                            vk::Format::eA2B10G10R10SnormPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_10_10_2, AmdGpu::NumberFormat::Uint,
+                            vk::Format::eA2B10G10R10UintPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_10_10_2, AmdGpu::NumberFormat::Sint,
+                            vk::Format::eA2B10G10R10SintPack32),
     // 2_10_10_10
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format2_10_10_10, AmdGpu::NumberFormat::Unorm,
                             vk::Format::eA2B10G10R10UnormPack32),
@@ -955,14 +965,10 @@ vk::ClearValue ColorBufferClearValue(const AmdGpu::ColorBuffer& color_buffer) {
         }
         break;
     case AmdGpu::DataFormat::Format10_11_11:
+    case AmdGpu::DataFormat::Format11_11_10:
         color.float32[0] = NumberUtils::Uf11ToF32(c0 & 0x7ff);
         color.float32[1] = NumberUtils::Uf11ToF32((c0 >> 11) & 0x7ff);
         color.float32[2] = NumberUtils::Uf10ToF32((c0 >> 22) & 0x3ff);
-        break;
-    case AmdGpu::DataFormat::Format11_11_10:
-        color.float32[0] = NumberUtils::Uf10ToF32(c0 & 0x3ff);
-        color.float32[1] = NumberUtils::Uf11ToF32((c0 >> 10) & 0x7ff);
-        color.float32[2] = NumberUtils::Uf11ToF32((c0 >> 21) & 0x7ff);
         break;
     case AmdGpu::DataFormat::Format5_9_9_9: {
         int exponent;

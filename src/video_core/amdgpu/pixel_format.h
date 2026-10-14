@@ -201,10 +201,6 @@ static constexpr CompMapping IdentityMapping = {
 
 constexpr DataFormat RemapDataFormat(const DataFormat format) {
     switch (format) {
-    case DataFormat::Format11_11_10:
-        return DataFormat::Format10_11_11;
-    case DataFormat::Format10_10_10_2:
-        return DataFormat::Format2_10_10_10;
     case DataFormat::Format5_5_5_1:
         return DataFormat::Format1_5_5_5;
     default:
@@ -272,8 +268,7 @@ constexpr NumberFormat RemapNumberFormat(const NumberFormat format, const DataFo
 
 constexpr CompMapping RemapSwizzle(const DataFormat format, const CompMapping swizzle) {
     switch (format) {
-    case DataFormat::Format1_5_5_5:
-    case DataFormat::Format11_11_10: {
+    case DataFormat::Format1_5_5_5: {
         CompMapping result;
         result.r = swizzle.b;
         result.g = swizzle.g;

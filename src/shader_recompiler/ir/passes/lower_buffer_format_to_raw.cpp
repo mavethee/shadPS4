@@ -61,9 +61,11 @@ static IR::Value LoadBufferFormat(IR::IREmitter& ir, const IR::Value handle, con
                                     IR::U32{ir.LoadBufferU32(1, handle, address, info)});
         break;
     case AmdGpu::DataFormat::Format10_11_11:
+    case AmdGpu::DataFormat::Format11_11_10:
         interpreted = ir.Unpack10_11_11(format_info.num_format,
                                         IR::U32{ir.LoadBufferU32(1, handle, address, info)});
         break;
+    case AmdGpu::DataFormat::Format10_10_10_2:
     case AmdGpu::DataFormat::Format2_10_10_10:
         interpreted = ir.Unpack2_10_10_10(format_info.num_format,
                                           IR::U32{ir.LoadBufferU32(1, handle, address, info)});
@@ -153,11 +155,13 @@ static void StoreBufferFormat(IR::IREmitter& ir, const IR::Value handle, const I
         ir.StoreBufferU32(1, handle, address, packed, info);
         break;
     }
-    case AmdGpu::DataFormat::Format10_11_11: {
+    case AmdGpu::DataFormat::Format10_11_11:
+    case AmdGpu::DataFormat::Format11_11_10: {
         const auto packed = ir.Pack10_11_11(format_info.num_format, real_value);
         ir.StoreBufferU32(1, handle, address, packed, info);
         break;
     }
+    case AmdGpu::DataFormat::Format10_10_10_2:
     case AmdGpu::DataFormat::Format2_10_10_10: {
         const auto packed = ir.Pack2_10_10_10(format_info.num_format, real_value);
         ir.StoreBufferU32(1, handle, address, packed, info);

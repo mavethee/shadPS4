@@ -114,6 +114,8 @@ u32 BufferAddressShift(const IR::Inst& inst, AmdGpu::DataFormat data_format) {
         case AmdGpu::DataFormat::Format8_8_8_8:
         case AmdGpu::DataFormat::Format16_16:
         case AmdGpu::DataFormat::Format10_11_11:
+        case AmdGpu::DataFormat::Format11_11_10:
+        case AmdGpu::DataFormat::Format10_10_10_2:
         case AmdGpu::DataFormat::Format2_10_10_10:
         case AmdGpu::DataFormat::Format16_16_16_16:
         case AmdGpu::DataFormat::Format32:
