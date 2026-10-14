@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include "common/logging/log.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/amdgpu/pixel_format.h"
@@ -61,10 +62,14 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageReso
         format = Vulkan::LiverpoolToVK::PromoteFormatToDepth(format);
     }
 
-    range.base.level = image.base_level;
-    range.base.layer = std::min<u32>(image.base_array, image.NumLayers() - 1);
-    range.extent.levels = image.NumViewLevels(desc.is_array);
-    range.extent.layers = image.NumViewLayers(desc.is_array);
+    const u32 num_levels = std::max<u32>(image.NumLevels(), 1);
+    const u32 num_layers = std::max<u32>(image.NumLayers(), 1);
+    range.base.level = std::min<u32>(image.base_level, num_levels - 1);
+    range.base.layer = std::min<u32>(image.base_array, num_layers - 1);
+    range.extent.levels =
+        std::clamp<u32>(image.NumViewLevels(desc.is_array), 1, num_levels - range.base.level);
+    range.extent.layers =
+        std::clamp<u32>(image.NumViewLayers(desc.is_array), 1, num_layers - range.base.layer);
     type = image.GetViewType(desc.is_array);
     min_lod = static_cast<u32>(image.min_lod);
     if (!is_storage) {
@@ -93,14 +98,23 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::DepthBuffer& depth_buffer, AmdGpu::De
 ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info_,
                      const Image& image)
     : info{info_} {
+    const u32 max_image_levels = std::max<u32>(image.info.resources.levels, 1);
+    const u32 base_level = std::min<u32>(info.range.base.level, max_image_levels - 1);
+    const u32 level_count =
+        std::clamp<u32>(info.range.extent.levels, 1, max_image_levels - base_level);
+
+    const u32 max_image_layers = std::max<u32>(image.info.resources.layers, 1);
+    const u32 base_layer = std::min<u32>(info.range.base.layer, max_image_layers - 1);
+    const u32 layer_count =
+        std::clamp<u32>(info.range.extent.layers, 1, max_image_layers - base_layer);
+
     vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags};
     if (!info.is_storage) {
         usage_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;
     }
     vk::ImageViewMinLodCreateInfoEXT min_lod_ci{};
     if (info.min_lod != 0 && instance.IsImageViewMinLodSupported()) {
-        const float last_level =
-            static_cast<float>(info.range.base.level + info.range.extent.levels - 1);
+        const float last_level = static_cast<float>(base_level + level_count - 1);
         min_lod_ci.minLod = std::min(static_cast<float>(info.min_lod) / 256.f, last_level);
         usage_ci.pNext = &min_lod_ci;
     }
@@ -130,10 +144,10 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
         .components = components,
         .subresourceRange{
             .aspectMask = aspect,
-            .baseMipLevel = info.range.base.level,
-            .levelCount = info.range.extent.levels,
-            .baseArrayLayer = info.range.base.layer,
-            .layerCount = info.range.extent.layers,
+            .baseMipLevel = base_level,
+            .levelCount = level_count,
+            .baseArrayLayer = base_layer,
+            .layerCount = layer_count,
         },
     };
     if (!IsViewTypeCompatible(info.type, image.info.type)) {
@@ -152,9 +166,9 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     Vulkan::SetObjectName(
         instance.GetDevice(), *image_view, "ImageView {}x{}x{} {:#x}:{:#x} {}:{} {}:{} ({})",
         image.info.size.width, image.info.size.height, image.info.size.depth,
-        image.info.guest_address, image.info.guest_size, info.range.base.level,
-        info.range.base.level + info.range.extent.levels - 1, info.range.base.layer,
-        info.range.base.layer + info.range.extent.layers - 1, view_aspect);
+        image.info.guest_address, image.info.guest_size, base_level,
+        base_level + level_count - 1, base_layer,
+        base_layer + layer_count - 1, view_aspect);
 }
 
 ImageView::~ImageView() = default;

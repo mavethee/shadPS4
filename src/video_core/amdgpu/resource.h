@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <bit>
 #include <cstring>
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -240,11 +242,17 @@ struct Image {
         return slices;
     }
 
+    [[nodiscard]] u32 MaxLevels() const noexcept {
+        const u32 max_dim = std::max({u32(width + 1), u32(height + 1),
+                                      GetType() == ImageType::Color3D ? u32(depth + 1) : 1u});
+        return std::max<u32>(1, std::bit_width(max_dim));
+    }
+
     u32 NumLevels() const {
         if (GetType() == ImageType::Color2DMsaa || GetType() == ImageType::Color2DMsaaArray) {
             return 1;
         }
-        return last_level + 1;
+        return std::clamp<u32>(last_level + 1, 1, MaxLevels());
     }
 
     u32 NumSamples() const {

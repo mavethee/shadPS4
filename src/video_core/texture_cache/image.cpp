@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <bit>
 #include <memory>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -178,6 +180,11 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     supported_samples = image_format_properties.result == vk::Result::eSuccess
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
                             : vk::SampleCountFlagBits::e1;
+
+    const u32 max_mip_levels = std::max<u32>(
+        1u, std::bit_width(std::max({info.size.width, info.size.height, info.size.depth})));
+    info.resources.levels = std::clamp<u32>(info.resources.levels, 1, max_mip_levels);
+    info.resources.layers = std::max<u32>(info.resources.layers, 1);
 
     const vk::ImageCreateInfo image_ci = {
         .flags = flags,
