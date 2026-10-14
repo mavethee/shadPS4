@@ -7,10 +7,13 @@
 #include "common/decoder.h"
 #include "common/signal_context.h"
 #include "core/cpu_patches.h" // Windows static guest red-zone protection
+#include "core/libraries/fiber/fiber.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/threads/exception.h"
 #include "core/libraries/kernel/threads/pthread.h"
+#include "core/memory.h"
 #include "core/signals.h"
+#include "core/tls.h"
 #include "emulator.h"
 
 #ifdef _WIN32
@@ -325,6 +328,29 @@ void SignalHandler(int sig, siginfo_t* info, void* raw_context) {
 
 #endif
 
+static bool StackGuardAccessViolationHandler(void* context, void* fault_address) {
+    using namespace Libraries::Kernel;
+    auto* thread = g_curthread;
+    if (!thread) {
+        return false;
+    }
+    const VAddr fault_addr = reinterpret_cast<VAddr>(fault_address);
+    VAddr stack_base = 0;
+    if (thread->tcb && thread->tcb->tcb_fiber && thread->tcb->tcb_fiber->current_fiber) {
+        auto* fiber = thread->tcb->tcb_fiber->current_fiber;
+        if (fiber->addr_context) {
+            stack_base = reinterpret_cast<VAddr>(fiber->addr_context);
+        }
+    }
+    if (!stack_base && thread->attr.stackaddr_attr) {
+        stack_base = reinterpret_cast<VAddr>(thread->attr.stackaddr_attr);
+    }
+    if (stack_base != 0 && fault_addr < stack_base && fault_addr >= stack_base - 128_KB) {
+        return Core::Memory::Instance()->TryCommitStackGuard(fault_addr);
+    }
+    return false;
+}
+
 SignalDispatch::SignalDispatch() {
 #if defined(_WIN32)
     ASSERT_MSG(handle = AddVectoredExceptionHandler(0, SignalHandler),
@@ -343,6 +369,7 @@ SignalDispatch::SignalDispatch() {
             sigaction(SIGSLEEP, &action, nullptr) == 0,
         "Failed to register signal handlers.");
 #endif
+    RegisterAccessViolationHandler(StackGuardAccessViolationHandler, 100);
 }
 
 void SignalDispatch::RemoveHandlers() {

@@ -993,7 +993,8 @@ u64 MemoryManager::UnmapBytesFromEntry(VAddr virtual_addr, VirtualMemoryArea vma
     vma.name = "";
     MergeAdjacent(vma_map, new_it);
 
-    if (vma_type != VMAType::Reserved && vma_type != VMAType::PoolReserved) {
+    if ((vma_type != VMAType::Reserved && vma_type != VMAType::PoolReserved) ||
+        vma.is_guard_committed) {
         // Unmap the memory region.
         u64 size_to_unmap = size_in_vma;
         VAddr unmapped_addr = impl.Unmap(virtual_addr, &size_to_unmap);
@@ -1391,6 +1392,54 @@ void MemoryManager::NameVirtualRange(VAddr virtual_addr, u64 size, std::string_v
             it++;
         }
     }
+
+    if (name == "stack guard (user)") {
+        auto it_guard = FindVMA(aligned_addr);
+        if (it_guard != vma_map.end() && it_guard->second.type == VMAType::Reserved) {
+            it_guard->second.is_guard_committed = true;
+            impl.CommitGuardPages(aligned_addr, aligned_size);
+        }
+    }
+}
+
+void MemoryManager::EnsureStackGuardHeadroom(VAddr stack_base, u64 headroom_size) {
+    if (stack_base < headroom_size) {
+        return;
+    }
+    std::scoped_lock lk{mutex, unmap_mutex};
+    auto it = FindVMA(stack_base - 1);
+    if (it != vma_map.end() && it->second.type == VMAType::Reserved) {
+        const auto& vma = it->second;
+        const VAddr guard_end = stack_base;
+        const VAddr guard_start =
+            std::max<VAddr>(vma.base, guard_end > headroom_size ? guard_end - headroom_size : 0);
+        if (guard_start < guard_end) {
+            const u64 guard_size = guard_end - guard_start;
+            auto carved_it = CarveVMA(guard_start, guard_size);
+            carved_it->second.is_guard_committed = true;
+            impl.CommitGuardPages(guard_start, guard_size);
+        }
+    }
+}
+
+bool MemoryManager::TryCommitStackGuard(VAddr fault_addr) {
+    std::scoped_lock lk{mutex, unmap_mutex};
+    auto it = FindVMA(fault_addr);
+    if (it != vma_map.end()) {
+        const VAddr page_addr = Common::AlignDown(fault_addr, 16_KB);
+        if (it->second.type == VMAType::Reserved) {
+            auto carved_it = CarveVMA(page_addr, 16_KB);
+            carved_it->second.is_guard_committed = true;
+            impl.CommitGuardPages(page_addr, 16_KB);
+            return true;
+        } else if (it->second.type == VMAType::Stack && it->second.prot == MemoryProt::NoAccess) {
+            auto carved_it = CarveVMA(page_addr, 16_KB);
+            carved_it->second.prot = MemoryProt::CpuReadWrite;
+            impl.Protect(page_addr, 16_KB, MemoryPermission::ReadWrite);
+            return true;
+        }
+    }
+    return false;
 }
 
 s32 MemoryManager::GetDirectMemoryType(PAddr addr, s32* directMemoryTypeOut,

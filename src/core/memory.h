@@ -113,6 +113,7 @@ struct VirtualMemoryArea {
     std::string name = "";
     s32 fd = 0;
     bool disallow_merge = false;
+    bool is_guard_committed = false;
 
     bool Contains(VAddr addr, u64 size) const {
         return addr >= base && (addr + size) <= (base + this->size);
@@ -145,7 +146,8 @@ struct VirtualMemoryArea {
                 return false;
             }
         }
-        if (prot != next.prot || type != next.type) {
+        if (prot != next.prot || type != next.type ||
+            is_guard_committed != next.is_guard_committed) {
             return false;
         }
         if (name.compare(next.name) != 0) {
@@ -303,6 +305,9 @@ public:
     s32 GetMemoryPoolStats(::Libraries::Kernel::OrbisKernelMemoryPoolBlockStats* stats);
 
     void InvalidateMemory(VAddr addr, u64 size) const;
+
+    void EnsureStackGuardHeadroom(VAddr stack_base, u64 headroom_size = 32_KB);
+    bool TryCommitStackGuard(VAddr fault_addr);
 
 private:
     VMAHandle FindVMA(VAddr target) {

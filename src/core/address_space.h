@@ -97,6 +97,9 @@ public:
     /// Protects requested region.
     void Protect(VAddr virtual_addr, u64 size, MemoryPermission perms);
 
+    /// Commits guard pages in reserved address space for stack headroom.
+    void CommitGuardPages(VAddr virtual_addr, u64 size);
+
     // Returns an interval set containing all usable regions.
     boost::icl::interval_set<VAddr> GetUsableRegions();
 

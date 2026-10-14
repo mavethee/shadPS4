@@ -607,6 +607,26 @@ struct AddressSpace::Impl {
         }
     }
 
+    void CommitGuardPages(VAddr virtual_addr, u64 size) {
+        std::scoped_lock lk{mutex};
+        auto it = std::prev(regions.upper_bound(virtual_addr));
+        if (it->second.is_mapped) {
+            DWORD old_flags{};
+            VirtualProtectEx(process, LPVOID(virtual_addr), size, PAGE_READWRITE, &old_flags);
+            return;
+        }
+        if (it->first != virtual_addr || it->second.size != size) {
+            SplitRegion(virtual_addr, size);
+            it = std::prev(regions.upper_bound(virtual_addr));
+        }
+        auto& [base, region] = *it;
+        region.is_mapped = true;
+        region.phys_base = -1;
+        region.prot = PAGE_READWRITE;
+        region.fd = -1;
+        MapRegion(&region);
+    }
+
     boost::icl::interval_set<VAddr> GetUsableRegions() {
         boost::icl::interval_set<VAddr> reserved_regions;
         for (auto region : regions) {
@@ -831,6 +851,11 @@ struct AddressSpace::Impl {
         ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
     }
 
+    void CommitGuardPages(VAddr virtual_addr, u64 size) {
+        int ret = mprotect(reinterpret_cast<void*>(virtual_addr), size, PROT_READ | PROT_WRITE);
+        ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
+    }
+
     int backing_fd;
     u8* backing_base{};
     u8* system_managed_base{};
@@ -899,6 +924,10 @@ void AddressSpace::Protect(VAddr virtual_addr, u64 size, MemoryPermission perms)
     const bool write = True(perms & MemoryPermission::Write);
     const bool execute = True(perms & MemoryPermission::Execute);
     return impl->Protect(virtual_addr, size, read, write, execute);
+}
+
+void AddressSpace::CommitGuardPages(VAddr virtual_addr, u64 size) {
+    impl->CommitGuardPages(virtual_addr, size);
 }
 
 boost::icl::interval_set<VAddr> AddressSpace::GetUsableRegions() {
