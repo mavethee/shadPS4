@@ -293,13 +293,19 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         // In case of partial transition, we need to change the specified subresources only.
         // Otherwise all subresources need to be set to the same state so we can use a full
         // resource transition for the next time.
-        const u32 start_mip = needs_partial_transition ? subres_range->base.level : u16{0};
+        const u32 start_mip = needs_partial_transition
+                                  ? std::min<u32>(subres_range->base.level, info.resources.levels - 1)
+                                  : 0u;
         const u32 end_mip = needs_partial_transition
-                                ? subres_range->base.level + subres_range->extent.levels
+                                ? std::clamp<u32>(subres_range->base.level + subres_range->extent.levels,
+                                                 start_mip + 1, info.resources.levels)
                                 : info.resources.levels;
-        const u32 start_layer = needs_partial_transition ? subres_range->base.layer : u16{0};
+        const u32 start_layer = needs_partial_transition
+                                    ? std::min<u32>(subres_range->base.layer, info.resources.layers - 1)
+                                    : 0u;
         const u32 end_layer = needs_partial_transition
-                                  ? subres_range->base.layer + subres_range->extent.layers
+                                  ? std::clamp<u32>(subres_range->base.layer + subres_range->extent.layers,
+                                                   start_layer + 1, info.resources.layers)
                                   : info.resources.layers;
         for (u32 mip = start_mip; mip < end_mip; ++mip) {
             for (u32 layer = start_layer; layer < end_layer; ++layer) {

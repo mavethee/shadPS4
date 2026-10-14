@@ -150,6 +150,9 @@ ImageInfo::ImageInfo(const AmdGpu::Image& sharp, const Shader::ImageResource& de
     pitch = image.Pitch();
     resources.levels = image.NumLevels();
     resources.layers = image.NumLayers();
+#ifdef __APPLE__
+    resources.layers = std::min<u32>(resources.layers, 2048u);
+#endif
     num_samples = image.NumSamples();
     num_bits = NumBitsPerBlock(data_fmt);
     guest_address = image.Address();
