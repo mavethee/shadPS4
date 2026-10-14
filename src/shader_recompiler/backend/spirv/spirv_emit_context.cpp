@@ -953,9 +953,20 @@ spv::ImageFormat GetFormat(const AmdGpu::Image& image) {
         image.GetNumberFmt() == AmdGpu::NumberFormat::Uint) {
         return spv::ImageFormat::Rgba8ui;
     }
-    if (image.GetDataFmt() == AmdGpu::DataFormat::Format10_11_11 &&
+    if ((image.GetDataFmt() == AmdGpu::DataFormat::Format10_11_11 ||
+         image.GetDataFmt() == AmdGpu::DataFormat::Format11_11_10) &&
         image.GetNumberFmt() == AmdGpu::NumberFormat::Float) {
         return spv::ImageFormat::R11fG11fB10f;
+    }
+    if ((image.GetDataFmt() == AmdGpu::DataFormat::Format10_10_10_2 ||
+         image.GetDataFmt() == AmdGpu::DataFormat::Format2_10_10_10) &&
+        image.GetNumberFmt() == AmdGpu::NumberFormat::Unorm) {
+        return spv::ImageFormat::Rgb10A2;
+    }
+    if ((image.GetDataFmt() == AmdGpu::DataFormat::Format10_10_10_2 ||
+         image.GetDataFmt() == AmdGpu::DataFormat::Format2_10_10_10) &&
+        image.GetNumberFmt() == AmdGpu::NumberFormat::Uint) {
+        return spv::ImageFormat::Rgb10a2ui;
     }
     if (image.GetDataFmt() == AmdGpu::DataFormat::Format32_32_32_32 &&
         image.GetNumberFmt() == AmdGpu::NumberFormat::Float) {
