@@ -286,9 +286,9 @@ struct ColorBuffer {
             // AlternateReverse
             std::array<CompMapping, 4>{{
                 {.r = CompSwizzle::Alpha, .g = CompSwizzle::Zero, .b = CompSwizzle::Zero, .a = CompSwizzle::Zero},
-                {.r = CompSwizzle::Alpha, .g = CompSwizzle::Red, .b = CompSwizzle::Zero, .a = CompSwizzle::Zero},
+                {.r = CompSwizzle::Green, .g = CompSwizzle::Red, .b = CompSwizzle::Zero, .a = CompSwizzle::Zero},
                 {.r = CompSwizzle::Alpha, .g = CompSwizzle::Green, .b = CompSwizzle::Red, .a = CompSwizzle::Zero},
-                {.r = CompSwizzle::Alpha, .g = CompSwizzle::Red, .b = CompSwizzle::Green, .a = CompSwizzle::Blue},
+                {.r = CompSwizzle::Green, .g = CompSwizzle::Blue, .b = CompSwizzle::Alpha, .a = CompSwizzle::Red},
             }},
         }};
         // clang-format on

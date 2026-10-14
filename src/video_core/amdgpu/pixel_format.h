@@ -200,12 +200,7 @@ static constexpr CompMapping IdentityMapping = {
 };
 
 constexpr DataFormat RemapDataFormat(const DataFormat format) {
-    switch (format) {
-    case DataFormat::Format5_5_5_1:
-        return DataFormat::Format1_5_5_5;
-    default:
-        return format;
-    }
+    return format;
 }
 
 constexpr NumberFormat RemapNumberFormat(const NumberFormat format, const DataFormat data_format) {
@@ -268,30 +263,13 @@ constexpr NumberFormat RemapNumberFormat(const NumberFormat format, const DataFo
 
 constexpr CompMapping RemapSwizzle(const DataFormat format, const CompMapping swizzle) {
     switch (format) {
-    case DataFormat::Format1_5_5_5: {
-        CompMapping result;
-        result.r = swizzle.b;
-        result.g = swizzle.g;
-        result.b = swizzle.r;
-        result.a = swizzle.a;
-        return result;
-    }
     case DataFormat::Format4_4_4_4: {
-        // Remap to a more supported component order.
+        // Remap to a more supported component order (Vulkan B4G4R4A4 -> AMD RGBA).
         CompMapping result;
         result.r = swizzle.g;
         result.g = swizzle.b;
         result.b = swizzle.a;
         result.a = swizzle.r;
-        return result;
-    }
-    case DataFormat::Format5_6_5: {
-        // Remap to a more supported component order.
-        CompMapping result;
-        result.r = swizzle.b;
-        result.g = swizzle.g;
-        result.b = swizzle.r;
-        result.a = swizzle.a;
         return result;
     }
     case DataFormat::Format8:
