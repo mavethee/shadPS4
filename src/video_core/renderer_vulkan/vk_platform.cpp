@@ -424,18 +424,19 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance) {
     const vk::DebugUtilsMessengerCreateInfoEXT msg_ci = {
-        .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
-                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
-                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose,
+        .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
+                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning,
         .messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
                        vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
                        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
         .pfnUserCallback = DebugUtilsCallback,
     };
     auto [messenger_result, messenger] = instance.createDebugUtilsMessengerEXTUnique(msg_ci);
-    ASSERT_MSG(messenger_result == vk::Result::eSuccess, "Failed to create debug callback: {}",
-               vk::to_string(messenger_result));
+    if (messenger_result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "Failed to create debug callback: {}",
+                    vk::to_string(messenger_result));
+        return {};
+    }
     return std::move(messenger);
 }
 

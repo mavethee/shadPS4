@@ -67,6 +67,11 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
         std::max<s64>(std::min(device_local_memory - min_vacancy_critical, min_spacing_critical),
                       min_critical_floor));
     trigger_gc_memory = static_cast<u64>((device_local_memory - mem_threshold) / 2);
+#if defined(__APPLE__)
+    pressure_gc_memory = std::min(pressure_gc_memory, static_cast<u64>(1_GB + 512_MB));
+    critical_gc_memory = std::min(critical_gc_memory, static_cast<u64>(2_GB + 512_MB));
+    trigger_gc_memory = std::min(trigger_gc_memory, static_cast<u64>(1_GB));
+#endif
 }
 
 TextureCache::~TextureCache() = default;
