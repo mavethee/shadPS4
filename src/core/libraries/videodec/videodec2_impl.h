@@ -4,6 +4,7 @@
 #pragma once
 
 #include <vector>
+#include <queue>
 
 #include "videodec2.h"
 
@@ -27,12 +28,14 @@ public:
     s32 Reset();
 
 private:
+    void DrainFrames();
     AVFrame* ConvertNV12Frame(AVFrame& frame);
 
 private:
     AVCodecContext* m_codec_context = nullptr;
     SwsContext* m_sws_context = nullptr;
     OrbisVideodec2DecoderConfigInfo m_config_info{};
+    std::queue<AVFrame*> m_frame_queue;
 };
 
 } // namespace Libraries::Videodec2
