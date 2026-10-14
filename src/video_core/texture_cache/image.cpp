@@ -5,6 +5,7 @@
 #include <bit>
 #include <memory>
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -126,6 +127,14 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image, &allocation,
                                 &alloc_info);
     }
+    if (result != VK_SUCCESS) {
+        LOG_CRITICAL(
+            Render_Vulkan,
+            "Failed allocating image: result={} type={} fmt={} extent={}x{}x{} mips={} layers={}",
+            vk::to_string(vk::Result{result}), vk::to_string(image_ci.imageType),
+            vk::to_string(image_ci.format), image_ci.extent.width, image_ci.extent.height,
+            image_ci.extent.depth, image_ci.mipLevels, image_ci.arrayLayers);
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};
@@ -181,10 +190,18 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
                             : vk::SampleCountFlagBits::e1;
 
+    info.size.width = std::max<u32>(info.size.width, 1);
+    info.size.height = std::max<u32>(info.size.height, 1);
+    info.size.depth = (ConvertImageType(info.type) == vk::ImageType::e3D)
+                          ? std::max<u32>(info.size.depth, 1)
+                          : 1;
+
     const u32 max_mip_levels = std::max<u32>(
         1u, std::bit_width(std::max({info.size.width, info.size.height, info.size.depth})));
     info.resources.levels = std::clamp<u32>(info.resources.levels, 1, max_mip_levels);
-    info.resources.layers = std::max<u32>(info.resources.layers, 1);
+    info.resources.layers = (ConvertImageType(info.type) == vk::ImageType::e3D)
+                                ? 1
+                                : std::max<u32>(info.resources.layers, 1);
 
     const vk::ImageCreateInfo image_ci = {
         .flags = flags,

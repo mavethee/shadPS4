@@ -103,10 +103,15 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     const u32 level_count =
         std::clamp<u32>(info.range.extent.levels, 1, max_image_levels - base_level);
 
+    const auto view_type = ConvertImageViewType(info.type);
     const u32 max_image_layers = std::max<u32>(image.info.resources.layers, 1);
     const u32 base_layer = std::min<u32>(info.range.base.layer, max_image_layers - 1);
-    const u32 layer_count =
+    u32 layer_count =
         std::clamp<u32>(info.range.extent.layers, 1, max_image_layers - base_layer);
+    if (view_type == vk::ImageViewType::e1D || view_type == vk::ImageViewType::e2D ||
+        view_type == vk::ImageViewType::e3D) {
+        layer_count = 1;
+    }
 
     vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags};
     if (!info.is_storage) {
@@ -139,7 +144,7 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     const vk::ImageViewCreateInfo image_view_ci = {
         .pNext = &usage_ci,
         .image = image.GetImage(),
-        .viewType = ConvertImageViewType(info.type),
+        .viewType = view_type,
         .format = instance.GetSupportedFormat(format, image.format_features),
         .components = components,
         .subresourceRange{
@@ -156,6 +161,13 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     }
 
     auto [view_result, view] = instance.GetDevice().createImageViewUnique(image_view_ci);
+    if (view_result != vk::Result::eSuccess) {
+        LOG_CRITICAL(
+            Render_Vulkan,
+            "Failed to create image view: result={} type={} fmt={} baseMip={} mips={} baseLayer={} layers={}",
+            vk::to_string(view_result), vk::to_string(view_type), vk::to_string(format),
+            base_level, level_count, base_layer, layer_count);
+    }
     ASSERT_MSG(view_result == vk::Result::eSuccess, "Failed to create image view: {}",
                vk::to_string(view_result));
     image_view = std::move(view);
