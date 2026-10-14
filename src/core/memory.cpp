@@ -1392,14 +1392,6 @@ void MemoryManager::NameVirtualRange(VAddr virtual_addr, u64 size, std::string_v
             it++;
         }
     }
-
-    if (name == "stack guard (user)") {
-        auto it_guard = FindVMA(aligned_addr);
-        if (it_guard != vma_map.end() && it_guard->second.type == VMAType::Reserved) {
-            it_guard->second.is_guard_committed = true;
-            impl.CommitGuardPages(aligned_addr, aligned_size);
-        }
-    }
 }
 
 void MemoryManager::EnsureStackGuardHeadroom(VAddr stack_base, u64 headroom_size) {
