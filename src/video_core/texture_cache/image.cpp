@@ -106,6 +106,14 @@ void UniqueImage::Destroy() {
 void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     this->image_ci = image_ci;
     ASSERT(!image);
+    LOG_INFO(Render_Vulkan,
+             "UniqueImage::Create: type={} fmt={} extent={}x{}x{} mips={} layers={} samples={} "
+             "flags={:#x} usage={:#x}",
+             vk::to_string(image_ci.imageType), vk::to_string(image_ci.format),
+             image_ci.extent.width, image_ci.extent.height, image_ci.extent.depth,
+             image_ci.mipLevels, image_ci.arrayLayers, vk::to_string(image_ci.samples),
+             static_cast<u32>(image_ci.flags), static_cast<u32>(image_ci.usage));
+    Common::Log::Flush();
     VmaAllocationCreateInfo alloc_ci = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -190,18 +198,22 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
                             : vk::SampleCountFlagBits::e1;
 
+    const bool is_3d = ConvertImageType(info.type) == vk::ImageType::e3D;
     info.size.width = std::max<u32>(info.size.width, 1);
     info.size.height = std::max<u32>(info.size.height, 1);
-    info.size.depth = (ConvertImageType(info.type) == vk::ImageType::e3D)
-                          ? std::max<u32>(info.size.depth, 1)
-                          : 1;
+    info.size.depth = is_3d ? std::max<u32>(info.size.depth, 1) : 1;
 
     const u32 max_mip_levels = std::max<u32>(
         1u, std::bit_width(std::max({info.size.width, info.size.height, info.size.depth})));
-    info.resources.levels = std::clamp<u32>(info.resources.levels, 1, max_mip_levels);
-    info.resources.layers = (ConvertImageType(info.type) == vk::ImageType::e3D)
+    info.resources.levels = (info.num_samples > 1)
                                 ? 1
-                                : std::max<u32>(info.resources.layers, 1);
+                                : std::clamp<u32>(info.resources.levels, 1, max_mip_levels);
+    info.resources.layers = is_3d ? 1 : std::max<u32>(info.resources.layers, 1);
+#ifdef __APPLE__
+    if (info.num_samples > 1) {
+        info.resources.layers = 1;
+    }
+#endif
 
     const vk::ImageCreateInfo image_ci = {
         .flags = flags,

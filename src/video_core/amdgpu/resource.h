@@ -226,20 +226,31 @@ struct Image {
     }
 
     [[nodiscard]] u32 NumLayers() const noexcept {
-        // Depth is the number of layers for Array images.
-        u32 slices = depth + 1;
-        const auto image_type = GetType();
-        if (image_type == ImageType::Color3D) {
-            // Depth is the actual texture depth for 3D images.
-            slices = 1;
-        } else if (image_type == ImageType::Cube) {
-            // Depth is the number of full cubes for Cube images.
-            slices *= 6;
+        switch (GetType()) {
+        case ImageType::Color1D:
+        case ImageType::Color2D:
+        case ImageType::Color2DMsaa:
+        case ImageType::Color3D:
+            return 1;
+        case ImageType::Color1DArray:
+        case ImageType::Color2DArray:
+        case ImageType::Color2DMsaaArray: {
+            u32 slices = depth + 1;
+            if (pow2pad) {
+                slices = std::bit_ceil(slices);
+            }
+            return slices;
         }
-        if (pow2pad) {
-            slices = std::bit_ceil(slices);
+        case ImageType::Cube: {
+            u32 slices = (depth + 1) * 6;
+            if (pow2pad) {
+                slices = std::bit_ceil(slices);
+            }
+            return slices;
         }
-        return slices;
+        default:
+            return 1;
+        }
     }
 
     [[nodiscard]] u32 MaxLevels() const noexcept {
