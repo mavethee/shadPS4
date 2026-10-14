@@ -1116,16 +1116,16 @@ vk::ClearValue ColorBufferClearValue(const AmdGpu::ColorBuffer& color_buffer) {
         color.float32[2] = NumberUtils::U5ToUnorm(c0 >> 11);
         break;
     case AmdGpu::DataFormat::Format1_5_5_5:
-        color.float32[0] = NumberUtils::U5ToUnorm(c0 & 0x1f);
+        color.float32[0] = NumberUtils::U5ToUnorm((c0 >> 10) & 0x1f);
         color.float32[1] = NumberUtils::U5ToUnorm((c0 >> 5) & 0x1f);
-        color.float32[2] = NumberUtils::U5ToUnorm((c0 >> 10) & 0x1f);
+        color.float32[2] = NumberUtils::U5ToUnorm(c0 & 0x1f);
         color.float32[3] = (c0 >> 15) ? 1.0f : 0.0f;
         break;
     case AmdGpu::DataFormat::Format5_5_5_1:
-        color.float32[0] = (c0 & 0x1) ? 1.0f : 0.0f;
-        color.float32[1] = NumberUtils::U5ToUnorm((c0 >> 1) & 0x1f);
-        color.float32[2] = NumberUtils::U5ToUnorm((c0 >> 6) & 0x1f);
-        color.float32[3] = NumberUtils::U5ToUnorm((c0 >> 11) & 0x1f);
+        color.float32[0] = NumberUtils::U5ToUnorm((c0 >> 11) & 0x1f);
+        color.float32[1] = NumberUtils::U5ToUnorm((c0 >> 6) & 0x1f);
+        color.float32[2] = NumberUtils::U5ToUnorm((c0 >> 1) & 0x1f);
+        color.float32[3] = (c0 & 0x1) ? 1.0f : 0.0f;
         break;
     case AmdGpu::DataFormat::Format4_4_4_4:
         color.float32[0] = NumberUtils::U4ToUnorm(c0 & 0xf);
