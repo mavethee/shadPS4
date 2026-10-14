@@ -981,18 +981,19 @@ Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     const auto format = desc.is_atomic ? GetFormat(image) : spv::ImageFormat::Unknown;
     const auto type = image.GetViewType(desc.is_array);
     const u32 sampled = desc.is_written ? 2 : 1;
+    const int depth = desc.is_depth ? 1 : 0;
     switch (type) {
     case AmdGpu::ImageType::Color1D:
     case AmdGpu::ImageType::Color2D:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, false, sampled, format);
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, depth, false, false, sampled, format);
     case AmdGpu::ImageType::Color1DArray:
     case AmdGpu::ImageType::Color2DArray:
     case AmdGpu::ImageType::Cube:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, true, false, sampled, format);
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, depth, true, false, sampled, format);
     case AmdGpu::ImageType::Color2DMsaa:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, true, sampled, format);
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, depth, false, true, sampled, format);
     case AmdGpu::ImageType::Color3D:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim3D, false, false, false, sampled, format);
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim3D, 0, false, false, sampled, format);
     default:
         break;
     }
