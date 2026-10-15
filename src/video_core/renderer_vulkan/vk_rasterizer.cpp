@@ -198,7 +198,7 @@ public:
         }
 
         if (instance.IsConditionalRenderingSupported()) {
-            std::tie(buffer, offset) = buffer_cache.ObtainBuffer(pred_address, pred_size, false);
+            std::tie(buffer, offset) = buffer_cache.ObtainBuffer(pred_address, pred_size);
             if (buffer) {
                 vk_buffer = buffer->Handle();
                 needs_barrier |= runtime.IsBufferAccessed(buffer, offset, pred_size);
