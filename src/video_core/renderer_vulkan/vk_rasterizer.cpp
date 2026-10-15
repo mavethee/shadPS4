@@ -183,7 +183,7 @@ public:
 
         pred_size =
             (op == AmdGpu::PM4CmdSetPredication::PredOp::Bool32) ? sizeof(u32) : sizeof(u64);
-        std::tie(buffer, offset) = buffer_cache.ObtainBuffer(pred_address, pred_size, false);
+        std::tie(buffer, offset) = buffer_cache.ObtainBuffer(pred_address, pred_size);
         if (buffer) {
             vk_buffer = buffer->Handle();
             needs_barrier |= runtime.IsBufferAccessed(buffer, offset, pred_size);
