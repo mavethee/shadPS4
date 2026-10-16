@@ -40,6 +40,8 @@ VdecDecoder::VdecDecoder(const OrbisVideodec2DecoderConfigInfo& config_info,
     }
     ASSERT(codec);
     m_codec_context = avcodec_alloc_context3(codec);
+    ASSERT(m_codec_context);
+    m_codec_context->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
 
     int res = avcodec_open2(m_codec_context, codec, nullptr);
     ASSERT_MSG(res >= 0, "Could not open codec");
