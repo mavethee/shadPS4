@@ -909,6 +909,7 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/file_sys/devices/logger.cpp
          src/core/file_sys/devices/logger.h
          src/core/file_sys/devices/nop_device.h
+        src/core/file_sys/devices/pipe_device.h
          src/core/file_sys/devices/console_device.cpp
          src/core/file_sys/devices/console_device.h
          src/core/file_sys/devices/deci_tty_device.cpp

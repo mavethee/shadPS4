@@ -138,6 +138,7 @@ enum class FileType {
 };
 
 struct File {
+    std::atomic<u32> ref_count{1};
     std::atomic_bool is_opened{};
     std::atomic<FileType> type{FileType::Regular};
     std::filesystem::path m_host_name;
@@ -191,6 +192,7 @@ public:
 
     int CreateHandle();
     void DeleteHandle(int d);
+    int DuplicateHandle(int old_fd, int target_fd = -1);
     File* GetFile(int d);
     File* GetSocket(int d);
     std::vector<int> GetSocketHandles();

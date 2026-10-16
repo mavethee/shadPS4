@@ -35,9 +35,68 @@ int HandleTable::CreateHandle() {
 }
 
 void HandleTable::DeleteHandle(int d) {
-    std::scoped_lock lock{m_mutex};
-    delete m_files.at(d);
-    m_files[d] = nullptr;
+    File* to_delete = nullptr;
+    {
+        std::scoped_lock lock{m_mutex};
+        if (d < 0 || static_cast<size_t>(d) >= m_files.size()) {
+            return;
+        }
+        auto* file = m_files[d];
+        if (!file) {
+            return;
+        }
+        m_files[d] = nullptr;
+        if (--file->ref_count == 0) {
+            to_delete = file;
+        }
+    }
+    delete to_delete;
+}
+
+int HandleTable::DuplicateHandle(int old_fd, int target_fd) {
+    File* to_delete = nullptr;
+    int result_fd = -1;
+    {
+        std::scoped_lock lock{m_mutex};
+        if (old_fd < 0 || static_cast<size_t>(old_fd) >= m_files.size()) {
+            return -1;
+        }
+        auto* file = m_files[old_fd];
+        if (!file) {
+            return -1;
+        }
+
+        if (target_fd < 0) {
+            for (size_t index = 0; index < m_files.size(); ++index) {
+                if (m_files[index] == nullptr) {
+                    m_files[index] = file;
+                    file->ref_count++;
+                    return static_cast<int>(index);
+                }
+            }
+            m_files.push_back(file);
+            file->ref_count++;
+            return static_cast<int>(m_files.size() - 1);
+        } else {
+            if (target_fd == old_fd) {
+                return target_fd;
+            }
+            if (static_cast<size_t>(target_fd) >= m_files.size()) {
+                m_files.resize(target_fd + 1, nullptr);
+            } else if (m_files[target_fd] != nullptr) {
+                auto* old_target = m_files[target_fd];
+                m_files[target_fd] = nullptr;
+                if (--old_target->ref_count == 0) {
+                    to_delete = old_target;
+                }
+            }
+            m_files[target_fd] = file;
+            file->ref_count++;
+            result_fd = target_fd;
+        }
+    }
+    delete to_delete;
+    return result_fd;
 }
 
 File* HandleTable::GetFile(int d) {

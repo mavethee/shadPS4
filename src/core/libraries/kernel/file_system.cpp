@@ -24,6 +24,7 @@
 #include "core/file_sys/devices/deci_tty_device.h"
 #include "core/file_sys/devices/logger.h"
 #include "core/file_sys/devices/nop_device.h"
+#include "core/file_sys/devices/pipe_device.h"
 #include "core/file_sys/devices/random_device.h"
 #include "core/file_sys/devices/rng_device.h"
 #include "core/file_sys/devices/srandom_device.h"
@@ -298,10 +299,12 @@ s32 PS4_SYSV_ABI close(s32 fd) {
     if (file->type == Core::FileSys::FileType::Socket) {
         return Libraries::Net::KernelClose(fd);
     }
-    if (file->type == Core::FileSys::FileType::Regular) {
-        file->handle.reset();
+    if (file->ref_count <= 1) {
+        if (file->type == Core::FileSys::FileType::Regular) {
+            file->handle.reset();
+        }
+        file->is_opened = false;
     }
-    file->is_opened = false;
     LOG_INFO(Kernel_Fs, "Closing {}", file->m_guest_name);
     // FIXME: Lock file mutex before deleting it?
     h->DeleteHandle(fd);
@@ -319,6 +322,95 @@ s32 PS4_SYSV_ABI sceKernelClose(s32 fd) {
         return ErrnoToSceKernelError(*__Error());
     }
     return result;
+}
+
+s32 PS4_SYSV_ABI dup(s32 oldd) {
+    auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
+    auto* file = h->GetFile(oldd);
+    if (file == nullptr || !file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+    int res = h->DuplicateHandle(oldd);
+    if (res < 0) {
+        *__Error() = POSIX_EMFILE;
+        return -1;
+    }
+    return res;
+}
+
+s32 PS4_SYSV_ABI dup2(s32 oldd, s32 newd) {
+    if (newd < 0 || newd >= 65536) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+    auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
+    auto* file = h->GetFile(oldd);
+    if (file == nullptr || !file->is_opened) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+    if (oldd == newd) {
+        return newd;
+    }
+    auto* target_file = h->GetFile(newd);
+    if (target_file != nullptr && target_file->type == Core::FileSys::FileType::Socket) {
+        Libraries::Net::KernelClose(newd);
+    }
+    int res = h->DuplicateHandle(oldd, newd);
+    if (res < 0) {
+        *__Error() = POSIX_EBADF;
+        return -1;
+    }
+    return res;
+}
+
+s32 PS4_SYSV_ABI sceKernelRdup(s32 oldd) {
+    s32 result = dup(oldd);
+    if (result < 0) {
+        return ErrnoToSceKernelError(*__Error());
+    }
+    return result;
+}
+
+s32 PS4_SYSV_ABI pipe(s32 fildes[2]) {
+    if (fildes == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+    auto* h = Common::Singleton<Core::FileSys::HandleTable>::Instance();
+    int read_fd = h->CreateHandle();
+    int write_fd = h->CreateHandle();
+    if (read_fd < 0 || write_fd < 0) {
+        if (read_fd >= 0) {
+            h->DeleteHandle(read_fd);
+        }
+        if (write_fd >= 0) {
+            h->DeleteHandle(write_fd);
+        }
+        *__Error() = POSIX_EMFILE;
+        return -1;
+    }
+
+    auto state = std::make_shared<Core::Devices::PipeState>();
+
+    auto* read_file = h->GetFile(read_fd);
+    read_file->is_opened = true;
+    read_file->type = Core::FileSys::FileType::Device;
+    read_file->m_guest_name = "pipe:[read]";
+    read_file->device =
+        std::make_shared<Core::Devices::PipeDevice>(state, Core::Devices::PipeEnd::Read);
+
+    auto* write_file = h->GetFile(write_fd);
+    write_file->is_opened = true;
+    write_file->type = Core::FileSys::FileType::Device;
+    write_file->m_guest_name = "pipe:[write]";
+    write_file->device =
+        std::make_shared<Core::Devices::PipeDevice>(state, Core::Devices::PipeEnd::Write);
+
+    fildes[0] = read_fd;
+    fildes[1] = write_fd;
+    return 0;
 }
 
 s64 PS4_SYSV_ABI write(s32 fd, const void* buf, u64 nbytes) {
@@ -1777,6 +1869,16 @@ void RegisterFileSystem(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("bY-PO6JhzhQ", "libScePosix", 1, "libkernel", posix_close);
     LIB_FUNCTION("bY-PO6JhzhQ", "libkernel", 1, "libkernel", posix_close);
     LIB_FUNCTION("UK2Tl2DWUns", "libkernel", 1, "libkernel", sceKernelClose);
+    LIB_FUNCTION("iiQjzvfWDq0", "libkernel", 1, "libkernel", dup);
+    LIB_FUNCTION("iiQjzvfWDq0", "libScePosix", 1, "libkernel", dup);
+    LIB_FUNCTION("9Iem9Wk07xU", "libkernel", 1, "libkernel", dup);
+    LIB_FUNCTION("LxIacrWiJ3w", "libkernel", 1, "libkernel", sceKernelRdup);
+    LIB_FUNCTION("wdUufa9g-D8", "libkernel", 1, "libkernel", dup2);
+    LIB_FUNCTION("wdUufa9g-D8", "libScePosix", 1, "libkernel", dup2);
+    LIB_FUNCTION("W8f1adVl+48", "libkernel", 1, "libkernel", dup2);
+    LIB_FUNCTION("W8f1adVl+48", "libScePosix", 1, "libkernel", dup2);
+    LIB_FUNCTION("-Jp7F+pXxNg", "libkernel", 1, "libkernel", pipe);
+    LIB_FUNCTION("-Jp7F+pXxNg", "libScePosix", 1, "libkernel", pipe);
     LIB_FUNCTION("FxVZqBAA7ks", "libkernel", 1, "libkernel", write);
     LIB_FUNCTION("FN4gaPmuFV8", "libScePosix", 1, "libkernel", posix_write);
     LIB_FUNCTION("FN4gaPmuFV8", "libkernel", 1, "libkernel", posix_write);
