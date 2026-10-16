@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "shader_recompiler/frontend/translate/translate.h"
@@ -76,6 +76,8 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_CONSUME(inst);
     case Opcode::DS_APPEND:
         return DS_APPEND(inst);
+    case Opcode::DS_ORDERED_COUNT:
+        return DS_ORDERED_COUNT(inst);
     case Opcode::DS_WRITE_B16:
         return DS_WRITE(16, false, false, false, inst);
     case Opcode::DS_WRITE_B64:
@@ -347,6 +349,16 @@ void Translator::DS_CONSUME(const GcnInst& inst) {
     const IR::U32 base = ir.BitFieldExtract(ir.GetM0(), ir.Imm32(16), ir.Imm32(16));
     const IR::U32 gds_offset = ir.IAdd(base, ir.Imm32(inst_offset));
     const IR::U32 prev = ir.DataConsume(ir.ShiftRightLogical(gds_offset, ir.Imm32(2u)));
+    SetDst(inst.dst[0], prev);
+}
+
+void Translator::DS_ORDERED_COUNT(const GcnInst& inst) {
+    const bool is_gds = inst.control.ds.gds;
+    const IR::U32 addr = GetSrc(inst.src[0]);
+    const IR::U32 offset =
+        ir.Imm32((u32(inst.control.ds.offset1) << 8u) + u32(inst.control.ds.offset0));
+    const IR::U32 addr_offset = ir.IAdd(addr, offset);
+    const IR::U32 prev = ir.SharedAtomicIAdd(addr_offset, ir.Imm32(1u), is_gds);
     SetDst(inst.dst[0], prev);
 }
 

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -1214,7 +1214,16 @@ void GcnDecodeContext::decodeInstructionMIMG(uint64_t hexInstruction) {
 }
 
 void GcnDecodeContext::decodeInstructionDS(uint64_t hexInstruction) {
-    OpcodeDS op = (OpcodeDS)bit::extract(hexInstruction, 25, 18);
+    u32 op_raw = bit::extract(hexInstruction, 25, 18);
+    if (Libraries::Kernel::sceKernelIsNeoMode() != 0) {
+        if ((op_raw >= 152 && op_raw <= 157) || (op_raw >= 189 && op_raw <= 191)) {
+            op_raw -= 128;
+        } else if (op_raw == 61) {
+            op_raw = 53;
+        }
+    }
+
+    OpcodeDS op = static_cast<OpcodeDS>(op_raw);
     u32 addr = bit::extract(hexInstruction, 39, 32);
     u32 data0 = bit::extract(hexInstruction, 47, 40);
     u32 data1 = bit::extract(hexInstruction, 55, 48);

@@ -1,7 +1,8 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "core/libraries/kernel/process.h"
 #include "shader_recompiler/frontend/decode.h"
 
 namespace Shader::Gcn {
@@ -4389,8 +4390,16 @@ InstFormat InstructionFormat(InstEncoding encoding, uint32_t opcode) {
         return InstructionFormatEXP[opcode];
     case InstEncoding::VINTRP:
         return InstructionFormatVINTRP[opcode];
-    case InstEncoding::DS:
+    case InstEncoding::DS: {
+        if (Libraries::Kernel::sceKernelIsNeoMode() != 0) {
+            if ((opcode >= 152 && opcode <= 157) || (opcode >= 189 && opcode <= 191)) {
+                opcode -= 128;
+            } else if (opcode == 61) {
+                opcode = 53;
+            }
+        }
         return InstructionFormatDS[opcode];
+    }
     case InstEncoding::MUBUF:
         return InstructionFormatMUBUF[opcode];
     case InstEncoding::MTBUF:
