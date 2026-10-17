@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -66,6 +67,7 @@ void VideoOutDriver::Close(s32 handle) {
     main_port.is_open = false;
     main_port.flip_rate = 0;
     main_port.prev_index = -1;
+    main_port.flip_cv.notify_all();
 
     // Clear port information
     std::memset(main_port.buffer_labels.data(), 0, sizeof(main_port.buffer_labels));
@@ -254,6 +256,7 @@ void VideoOutDriver::Flip(const Request& req) {
             --flip_status.gc_queue_num;
         }
         --flip_status.flip_pending_num;
+        port->flip_cv.notify_one();
     }
 
     // Trigger flip events for the port.
@@ -293,6 +296,15 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
                                 bool is_eop /*= false*/) {
     {
         std::unique_lock lock{port->port_mutex};
+        if (index != -1 && port->is_open) {
+            const u32 max_pending = (port->flip_rate > 0) ? 2 : 4;
+            if (port->flip_status.flip_pending_num >= max_pending) {
+                port->flip_cv.wait_for(lock, std::chrono::milliseconds(100), [&]() {
+                    return !port->is_open || port->flip_status.flip_pending_num < max_pending;
+                });
+            }
+        }
+
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
             LOG_ERROR(Lib_VideoOut, "Flip queue is full");
             return false;
