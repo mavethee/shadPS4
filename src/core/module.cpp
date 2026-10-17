@@ -253,6 +253,55 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
         case PT_SCE_PROCPARAM:
             proc_param_virtual_addr = elf_pheader[i].p_vaddr + base_virtual_addr;
             break;
+        case PT_SCE_MODULE_PARAM:
+            module_param_virtual_addr = elf_pheader[i].p_vaddr + base_virtual_addr;
+            break;
+        case PT_INTERP: {
+            if (elf_pheader[i].p_filesz != 0) {
+                interpreter_path.resize(elf_pheader[i].p_filesz);
+                elf.LoadSegment(std::bit_cast<VAddr>(interpreter_path.data()),
+                                elf_pheader[i].p_offset, elf_pheader[i].p_filesz);
+                while (!interpreter_path.empty() && interpreter_path.back() == '\0') {
+                    interpreter_path.pop_back();
+                }
+                LOG_INFO(Core_Linker, "Module interpreter: '{}'", interpreter_path);
+            }
+            break;
+        }
+        case PT_SCE_COMMENT: {
+            if (elf_pheader[i].p_filesz != 0) {
+                comment.resize(elf_pheader[i].p_filesz);
+                elf.LoadSegment(std::bit_cast<VAddr>(comment.data()), elf_pheader[i].p_offset,
+                                elf_pheader[i].p_filesz);
+                std::string cleaned_comment = comment;
+                for (char& c : cleaned_comment) {
+                    if (c == '\0') {
+                        c = ' ';
+                    }
+                }
+                while (!cleaned_comment.empty() &&
+                       (cleaned_comment.back() == ' ' || cleaned_comment.back() == '\0')) {
+                    cleaned_comment.pop_back();
+                }
+                LOG_INFO(Core_Linker, "Module comment for {}: '{}'", name, cleaned_comment);
+            }
+            break;
+        }
+        case PT_SCE_LIBVERSION: {
+            if (elf_pheader[i].p_filesz != 0) {
+                u32 lib_version = 0;
+                elf.LoadSegment(std::bit_cast<VAddr>(&lib_version), elf_pheader[i].p_offset,
+                                std::min<u64>(elf_pheader[i].p_filesz, sizeof(lib_version)));
+                LOG_INFO(Core_Linker, "SCE library version for {}: {:#x}", name, lib_version);
+            }
+            break;
+        }
+        case PT_GNU_STACK:
+        case PT_GNU_RELRO:
+        case PT_NOTE:
+        case PT_PHDR:
+            // Non-loadable metadata/flags segments; nothing to map
+            break;
         case PT_GNU_EH_FRAME: {
             eh_frame_hdr_addr = elf_pheader[i].p_vaddr;
             eh_frame_hdr_size = elf_pheader[i].p_memsz;
