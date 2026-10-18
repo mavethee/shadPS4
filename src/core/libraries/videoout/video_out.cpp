@@ -52,7 +52,7 @@ s32 PS4_SYSV_ABI sceVideoOutAddFlipEvent(Kernel::OrbisKernelEqueue eq, s32 handl
     }
 
     Kernel::EqueueEvent event{};
-    event.event.ident = static_cast<u64>(OrbisVideoOutInternalEventId::Flip);
+    event.event.ident = MakeVideoOutEventIdent(OrbisVideoOutInternalEventId::Flip, handle);
     event.event.filter = Kernel::OrbisKernelEvent::Filter::VideoOut;
     event.event.flags = Kernel::OrbisKernelEvent::Flags::Add;
     event.event.udata = udata;
@@ -75,7 +75,8 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteFlipEvent(Kernel::OrbisKernelEqueue eq, s32 ha
     if (equeue == nullptr) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
-    equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
+    equeue->RemoveEvent(MakeVideoOutEventIdent(OrbisVideoOutInternalEventId::Flip, handle),
+                        Kernel::OrbisKernelEvent::Filter::VideoOut);
     port->flip_events.erase(find(port->flip_events.begin(), port->flip_events.end(), eq));
     return ORBIS_OK;
 }
@@ -94,7 +95,7 @@ s32 PS4_SYSV_ABI sceVideoOutAddVblankEvent(Kernel::OrbisKernelEqueue eq, s32 han
     }
 
     Kernel::EqueueEvent event{};
-    event.event.ident = static_cast<u64>(OrbisVideoOutInternalEventId::Vblank);
+    event.event.ident = MakeVideoOutEventIdent(OrbisVideoOutInternalEventId::Vblank, handle);
     event.event.filter = Kernel::OrbisKernelEvent::Filter::VideoOut;
     event.event.flags = Kernel::OrbisKernelEvent::Flags::Add;
     event.event.udata = udata;
@@ -117,7 +118,8 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteVblankEvent(Kernel::OrbisKernelEqueue eq, s32 
     if (equeue == nullptr) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
-    equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
+    equeue->RemoveEvent(MakeVideoOutEventIdent(OrbisVideoOutInternalEventId::Vblank, handle),
+                        Kernel::OrbisKernelEvent::Filter::VideoOut);
     port->vblank_events.erase(find(port->vblank_events.begin(), port->vblank_events.end(), eq));
     return ORBIS_OK;
 }
@@ -192,8 +194,9 @@ s32 PS4_SYSV_ABI sceVideoOutGetEventId(const Kernel::OrbisKernelEvent* ev) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT;
     }
 
-    OrbisVideoOutInternalEventId internal_event_id =
-        static_cast<OrbisVideoOutInternalEventId>(ev->ident);
+    const u16 raw_id = static_cast<u16>(ev->ident >> 48);
+    const auto internal_event_id =
+        static_cast<OrbisVideoOutInternalEventId>(raw_id != 0 ? raw_id : ev->ident);
     switch (internal_event_id) {
     case OrbisVideoOutInternalEventId::Flip:
         return static_cast<s32>(OrbisVideoOutEventId::Flip);
@@ -220,11 +223,15 @@ s32 PS4_SYSV_ABI sceVideoOutGetEventData(const Kernel::OrbisKernelEvent* ev, s64
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT;
     }
 
-    auto event_data = ev->data >> 0x10;
-    if (ev->ident != static_cast<s32>(OrbisVideoOutInternalEventId::Flip) || ev->data >= 0) {
+    const u16 raw_id = static_cast<u16>(ev->ident >> 48);
+    const auto internal_id =
+        static_cast<OrbisVideoOutInternalEventId>(raw_id != 0 ? raw_id : ev->ident);
+
+    const auto event_data = ev->data >> 0x10;
+    if (internal_id != OrbisVideoOutInternalEventId::Flip || static_cast<s64>(ev->data) >= 0) {
         *data = event_data;
     } else {
-        *data = event_data | 0xffff000000000000;
+        *data = event_data | 0xffff000000000000ULL;
     }
     return ORBIS_OK;
 }
@@ -237,8 +244,7 @@ s32 PS4_SYSV_ABI sceVideoOutGetEventCount(const Kernel::OrbisKernelEvent* ev) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT;
     }
 
-    auto event_data = static_cast<OrbisVideoOutEventData>(ev->data);
-    return event_data.count;
+    return static_cast<s32>((ev->data >> 12) & 0xf);
 }
 
 s32 PS4_SYSV_ABI sceVideoOutGetFlipStatus(s32 handle, FlipStatus* status) {

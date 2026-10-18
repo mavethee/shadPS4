@@ -273,7 +273,8 @@ int EqueueInternal::GetTriggeredEvents(OrbisKernelEvent* ev, int num) {
 
         if (it->IsTriggered()) {
             ev[count++] = it->event;
-            if (it->event.flags & OrbisKernelEvent::Flags::Clear) {
+            if (it->event.filter == OrbisKernelEvent::Filter::VideoOut ||
+                (it->event.flags & OrbisKernelEvent::Flags::Clear)) {
                 it->Clear();
             }
             if (it->event.flags & OrbisKernelEvent::Flags::OneShot) {

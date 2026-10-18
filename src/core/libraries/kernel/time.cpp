@@ -7,9 +7,11 @@
 #include "common/assert.h"
 #include "common/native_clock.h"
 #include "common/thread.h"
+#include "common/uint128.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
+#include "core/libraries/kernel/process.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
 
@@ -33,8 +35,26 @@ static std::chrono::system_clock::time_point network_boottime;
 static std::chrono::steady_clock::time_point initial_uptime;
 static std::unique_ptr<Common::NativeClock> clock;
 
+// PS4 Jaguar TSC frequency: 1.6 GHz for Base (FAT/Slim), 2.13 GHz for Neo (Pro)
+constexpr u64 PS4_BASE_TSC_FREQ = 1'600'000'000ULL;
+constexpr u64 PS4_NEO_TSC_FREQ = 2'133'333'333ULL;
+
+static inline u64 GetPs4TscFrequency() {
+    static const u64 ps4_tsc_freq = sceKernelIsNeoMode() ? PS4_NEO_TSC_FREQ : PS4_BASE_TSC_FREQ;
+    return ps4_tsc_freq;
+}
+
+static inline u64 ScaleToPs4Tsc(u64 host_tsc) {
+    const u64 ps4_freq = GetPs4TscFrequency();
+    const u64 host_freq = clock->GetTscFrequency();
+    if (host_freq == 0 || host_freq == ps4_freq) {
+        return host_tsc;
+    }
+    return Common::MultiplyAndDivide64(host_tsc, ps4_freq, host_freq);
+}
+
 u64 PS4_SYSV_ABI sceKernelGetTscFrequency() {
-    return clock->GetTscFrequency();
+    return GetPs4TscFrequency();
 }
 
 u64 PS4_SYSV_ABI sceKernelGetProcessTime() {
@@ -43,15 +63,15 @@ u64 PS4_SYSV_ABI sceKernelGetProcessTime() {
 }
 
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounter() {
-    return clock->GetUptime() - initial_ptc;
+    return ScaleToPs4Tsc(clock->GetUptime() - initial_ptc);
 }
 
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounterFrequency() {
-    return clock->GetTscFrequency();
+    return GetPs4TscFrequency();
 }
 
 u64 PS4_SYSV_ABI sceKernelReadTsc() {
-    return clock->GetUptime();
+    return ScaleToPs4Tsc(clock->GetUptime());
 }
 
 static s32 posix_nanosleep_impl(const OrbisKernelTimespec* rqtp, OrbisKernelTimespec* rmtp,

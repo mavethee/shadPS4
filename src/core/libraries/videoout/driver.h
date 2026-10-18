@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -33,6 +33,7 @@ struct VideoOutPort {
     std::condition_variable vblank_cv;
     int flip_rate = 0;
     int prev_index = -1;
+    s32 handle = 1;
     bool is_open = false;
     bool is_hdr = false;
 

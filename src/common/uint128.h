@@ -29,6 +29,8 @@ namespace Common {
     r[0] = _umul128(a, b, &r[1]);
     u64 remainder;
     return _udiv128(r[1], r[0], d, &remainder);
+#elif defined(__SIZEOF_INT128__)
+    return static_cast<u64>((static_cast<unsigned __int128>(a) * b) / d);
 #else
     const u64 diva = a / d;
     const u64 moda = a % d;
