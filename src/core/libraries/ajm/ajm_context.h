@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -28,6 +28,7 @@ public:
 
     s32 BatchCancel(const u32 batch_id);
     s32 ModuleRegister(AjmCodecType type);
+    s32 ModuleUnregister(AjmCodecType type);
     s32 BatchWait(const u32 batch_id, const u32 timeout, AjmBatchError* const p_batch_error);
     s32 BatchStartBuffer(u8* p_batch, u32 batch_size, const int priority,
                          AjmBatchError* p_batch_error, u32* p_batch_id);

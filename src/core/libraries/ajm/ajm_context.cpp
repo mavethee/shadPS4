@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
@@ -57,6 +57,18 @@ s32 AjmContext::ModuleRegister(AjmCodecType type) {
         return ORBIS_AJM_ERROR_CODEC_ALREADY_REGISTERED;
     }
     registered_codecs[std::to_underlying(type)] = true;
+    return ORBIS_OK;
+}
+
+s32 AjmContext::ModuleUnregister(AjmCodecType type) {
+    if (std::to_underlying(type) >= NumAjmCodecs) {
+        return ORBIS_AJM_ERROR_INVALID_PARAMETER;
+    }
+    const auto index = std::to_underlying(type);
+    if (!registered_codecs[index]) {
+        return ORBIS_AJM_ERROR_CODEC_NOT_REGISTERED;
+    }
+    registered_codecs[index] = false;
     return ORBIS_OK;
 }
 
@@ -163,11 +175,28 @@ s32 AjmContext::InstanceCreate(AjmCodecType codec_type, AjmInstanceFlags flags, 
     if (codec_type >= AjmCodecType::Max) {
         return ORBIS_AJM_ERROR_INVALID_PARAMETER;
     }
-    if (flags.version == 0) {
-        return ORBIS_AJM_ERROR_WRONG_REVISION_FLAG;
+    if ((flags.raw & 0x380) > 0x17f) {
+        return ORBIS_AJM_ERROR_FLAG_NOT_SUPPORTED;
     }
     if (!IsRegistered(codec_type)) {
         return ORBIS_AJM_ERROR_CODEC_NOT_REGISTERED;
+    }
+    switch (codec_type) {
+    case AjmCodecType::Mp3Dec:
+    case AjmCodecType::At9Dec:
+    case AjmCodecType::M4aacDec:
+    case AjmCodecType::Ac3Dec:
+    case AjmCodecType::Mpeg2BcDec:
+    case AjmCodecType::M4aacDecNoGame:
+    case AjmCodecType::VorbisDec:
+    case AjmCodecType::OpusCeltDec:
+    case AjmCodecType::OpusSilkDec:
+    case AjmCodecType::FlacDec:
+    case AjmCodecType::OpusDec:
+        break;
+    default:
+        LOG_ERROR(Lib_Ajm, "Unsupported AJM codec type: {}", static_cast<u32>(codec_type));
+        return ORBIS_AJM_ERROR_CODEC_NOT_SUPPORTED;
     }
     std::optional<u32> opt_index;
     {

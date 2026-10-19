@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -20,6 +20,26 @@ enum class AjmCodecType : u32 {
     Mp3Dec = 0,
     At9Dec = 1,
     M4aacDec = 2,
+    Celp8Dec = 3,
+    Celp8Enc = 4,
+    M4aacEnc = 5,
+    Ac3Dec = 6,
+    Ac3Enc = 7,
+    DolbyTrueHdDec = 8,
+    Mpeg2BcDec = 9,
+    DtsEnc = 10,
+    M4aacDecNoGame = 11,
+    Celp16Dec = 12,
+    Celp16Enc = 13,
+    VorbisDec = 14,
+    OpusCeltEnc = 15,
+    OpusCeltDec = 16,
+    OpusSilkEnc = 17,
+    OpusSilkDec = 18,
+    SrcUtility = 19,
+    FlacDec = 20,
+    OpusDec = 21,
+    Custom = 22,
     Max = 23,
 };
 DECLARE_ENUM_FLAG_OPERATORS(AjmCodecType);
@@ -182,12 +202,22 @@ union AjmInstanceFlags {
 };
 static_assert(sizeof(AjmInstanceFlags) == 8);
 
+struct OrbisAjmDecAt9ConfigData {
+    u32 channels;
+    u32 sample_rate;
+    u32 frame_samples;
+    u32 superframe_samples;
+    u32 superframe_bytes;
+};
+static_assert(sizeof(OrbisAjmDecAt9ConfigData) == 0x14);
+
 struct AjmDecMp3ParseFrame;
 
 u32 GetChannelMask(u32 num_channels);
 
 int PS4_SYSV_ABI sceAjmBatchCancel(const u32 context_id, const u32 batch_id);
-int PS4_SYSV_ABI sceAjmBatchErrorDump();
+void PS4_SYSV_ABI sceAjmBatchErrorDump(const AjmBuffer* batch_buffer,
+                                       const AjmBatchError* batch_error);
 void* PS4_SYSV_ABI sceAjmBatchJobControlBufferRa(void* p_buffer, u32 instance_id, u64 flags,
                                                  void* p_sideband_input, size_t sideband_input_size,
                                                  void* p_sideband_output,
@@ -210,22 +240,25 @@ int PS4_SYSV_ABI sceAjmBatchStartBuffer(u32 context, u8* batch, u32 batch_size, 
                                         AjmBatchError* batch_error, u32* out_batch_id);
 int PS4_SYSV_ABI sceAjmBatchWait(const u32 context, const u32 batch_id, const u32 timeout,
                                  AjmBatchError* const batch_error);
-int PS4_SYSV_ABI sceAjmDecAt9ParseConfigData();
+int PS4_SYSV_ABI sceAjmDecAt9ParseConfigData(const void* config_data,
+                                             OrbisAjmDecAt9ConfigData* out_data);
 int PS4_SYSV_ABI sceAjmDecMp3ParseFrame(const u8* stream, u32 stream_size, int parse_ofl,
                                         AjmDecMp3ParseFrame* frame);
-int PS4_SYSV_ABI sceAjmFinalize();
+int PS4_SYSV_ABI sceAjmFinalize(u32 context_id);
 int PS4_SYSV_ABI sceAjmInitialize(s64 reserved, u32* out_context);
 AjmCodecType PS4_SYSV_ABI sceAjmInstanceCodecType(u32 instance_id);
 int PS4_SYSV_ABI sceAjmInstanceCreate(u32 context, AjmCodecType codec_type, AjmInstanceFlags flags,
                                       u32* instance);
 int PS4_SYSV_ABI sceAjmInstanceDestroy(u32 context, u32 instance);
-int PS4_SYSV_ABI sceAjmInstanceExtend();
-int PS4_SYSV_ABI sceAjmInstanceSwitch();
+int PS4_SYSV_ABI sceAjmInstanceExtend(u32 context, AjmCodecType codec_type, AjmInstanceFlags flags,
+                                      u32 instance);
+int PS4_SYSV_ABI sceAjmInstanceSwitch(u32 context, AjmCodecType codec_type, AjmInstanceFlags flags,
+                                      u32 instance);
 int PS4_SYSV_ABI sceAjmMemoryRegister(u32 context_id, void* ptr, size_t num_pages);
 int PS4_SYSV_ABI sceAjmMemoryUnregister(u32 context_id, void* ptr);
 int PS4_SYSV_ABI sceAjmModuleRegister(u32 context, AjmCodecType codec_type, s64 reserved);
-int PS4_SYSV_ABI sceAjmModuleUnregister();
-int PS4_SYSV_ABI sceAjmStrError();
+int PS4_SYSV_ABI sceAjmModuleUnregister(u32 context, AjmCodecType codec_type);
+const char* PS4_SYSV_ABI sceAjmStrError(int error_code);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Ajm
