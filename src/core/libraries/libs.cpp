@@ -76,6 +76,7 @@
 #include "core/libraries/usbd/usbd.h"
 #include "core/libraries/usbd/usbstorage.h"
 #include "core/libraries/video_recording/video_recording.h"
+#include "core/libraries/videocore/videocore.h"
 #include "core/libraries/videodec/vdecsw.h"
 #include "core/libraries/videodec/videodec.h"
 #include "core/libraries/videodec/videodec2.h"
@@ -192,6 +193,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libSceVideoRecording.sprx", Libraries::VideoRecording::RegisterLib},
             {"libSceInvitationDialog.sprx", Libraries::InvitationDialog::RegisterLib},
             {"libSceIpmi.sprx", Libraries::Ipmi::RegisterLib},
+            {"libSceVideoCoreInterface.sprx", Libraries::VideoCoreInterface::RegisterLib},
             {"libSceNpUtility.sprx", Libraries::Np::NpUtility::RegisterLib},
 #ifdef ARCH_X86_64
             {"libSceFiber.sprx", Libraries::Fiber::RegisterLib},

@@ -512,6 +512,8 @@ set(SYSTEM_LIBS src/core/libraries/system/commondialog.cpp
                 src/core/libraries/invitation_dialog/invitation_dialog_ui.h
                 src/core/libraries/ipmi/ipmi.cpp
                 src/core/libraries/ipmi/ipmi.h
+                src/core/libraries/videocore/videocore.cpp
+                src/core/libraries/videocore/videocore.h
 )
 
 set(VIDEOOUT_LIB src/core/libraries/videoout/buffer.h

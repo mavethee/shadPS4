@@ -205,6 +205,8 @@ std::string_view NameOf(Class log_class) {
         return "Lib.FontFt";
     case Class::Lib_Ipmi:
         return "Lib.Ipmi";
+    case Class::Lib_VideoCore:
+        return "Lib.VideoCore";
     case Class::Frontend:
         return "Frontend";
     case Class::NpHandler:
