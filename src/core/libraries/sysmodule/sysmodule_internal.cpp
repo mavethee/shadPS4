@@ -10,6 +10,7 @@
 #include "core/libraries/disc_map/disc_map.h"
 #include "core/libraries/font/font.h"
 #include "core/libraries/font/fontft.h"
+#include "core/libraries/ipmi/ipmi.h"
 #include "core/libraries/jpeg/jpegenc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -24,6 +25,9 @@
 #include "core/libraries/sysmodule/sysmodule_internal.h"
 #include "core/libraries/sysmodule/sysmodule_table.h"
 #include "core/libraries/system_gesture/system_gesture.h"
+#include "core/libraries/videocore/videocore.h"
+#include "core/libraries/videodec/vdeccore.h"
+#include "core/libraries/videodec/videocore_server.h"
 #include "core/linker.h"
 #include "emulator.h"
 
@@ -248,7 +252,11 @@ s32 loadModuleInternal(s32 index, s32 argc, const void* argv, s32* res_out) {
              {"libScePadTracker.sprx", nullptr},
              {"libSceMoveTracker.sprx", nullptr},
              {"libSceSystemGesture.sprx", &Libraries::SystemGesture::RegisterLib},
-             {"libSceXml.sprx", nullptr}});
+             {"libSceXml.sprx", nullptr},
+             {"libSceVdecCore.sprx", &Libraries::VdecCore::RegisterLib},
+             {"libSceVideoCoreServerInterface.sprx", &Libraries::VideoCoreServer::RegisterLib},
+             {"libSceIpmi.sprx", &Libraries::Ipmi::RegisterLib},
+             {"libSceVideoCoreInterface.sprx", &Libraries::VideoCoreInterface::RegisterLib}});
 
         // Iterate through the allowed array
         const auto it = std::ranges::find_if(
