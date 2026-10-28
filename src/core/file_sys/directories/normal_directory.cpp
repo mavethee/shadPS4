@@ -44,10 +44,19 @@ s64 NormalDirectory::read(void* buf, u64 nbytes) {
 }
 
 s32 NormalDirectory::fstat(Libraries::Kernel::OrbisKernelStat* stat) {
+    if (!dirents_built) {
+        RebuildDirents();
+    }
     stat->st_mode = 0000777u | 0040000u;
     stat->st_size = directory_size;
     stat->st_blksize = 0x8000;
     stat->st_blocks = 8;
+
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    Core::FileSys::FileStat fst{};
+    if (mnt->Stat(guest_directory, fst) && fst.inode != 0) {
+        stat->st_ino = fst.inode;
+    }
     return ORBIS_OK;
 }
 
