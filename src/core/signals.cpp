@@ -142,7 +142,82 @@ static LONG WINAPI SignalHandler(EXCEPTION_POINTERS* pExp) noexcept {
     const bool report_unhandled =
         use_static_windows_guest_red_zone_protection ? static_protection_exception : true;
     if (report_unhandled) {
-        LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        if (code == EXCEPTION_ACCESS_VIOLATION && pExp && pExp->ExceptionRecord &&
+            pExp->ExceptionRecord->NumberParameters >= 2) {
+            const auto access_type = pExp->ExceptionRecord->ExceptionInformation[0];
+            const auto fault_addr = pExp->ExceptionRecord->ExceptionInformation[1];
+            const char* type_str = access_type == 0   ? "Read from"
+                                   : access_type == 1 ? "Write to"
+                                   : access_type == 8 ? "Execute from"
+                                                      : "Access to";
+            LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}: {} address {:#x}", code,
+                         address, type_str, fault_addr);
+        } else {
+            LOG_CRITICAL(Debug, "Unhandled Exception code {:#x} at {}", code, address);
+        }
+
+        if (pExp && pExp->ContextRecord) {
+            const auto* ctx = pExp->ContextRecord;
+            LOG_CRITICAL(Debug, "Registers:");
+            LOG_CRITICAL(Debug, "  RAX: {:#018x}  RBX: {:#018x}  RCX: {:#018x}  RDX: {:#018x}",
+                         ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
+            LOG_CRITICAL(Debug, "  RSI: {:#018x}  RDI: {:#018x}  RBP: {:#018x}  RSP: {:#018x}",
+                         ctx->Rsi, ctx->Rdi, ctx->Rbp, ctx->Rsp);
+            LOG_CRITICAL(Debug, "  R8 : {:#018x}  R9 : {:#018x}  R10: {:#018x}  R11: {:#018x}",
+                         ctx->R8, ctx->R9, ctx->R10, ctx->R11);
+            LOG_CRITICAL(Debug, "  R12: {:#018x}  R13: {:#018x}  R14: {:#018x}  R15: {:#018x}",
+                         ctx->R12, ctx->R13, ctx->R14, ctx->R15);
+            LOG_CRITICAL(Debug, "  RIP: {:#018x}  RFL: {:#010x}", ctx->Rip, ctx->EFlags);
+
+            // Read and disassemble instructions at RIP
+            u8 code_bytes[32] = {};
+            SIZE_T bytes_read = 0;
+            if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(ctx->Rip),
+                                  code_bytes, sizeof(code_bytes), &bytes_read) &&
+                bytes_read > 0) {
+                std::string hex_bytes;
+                for (SIZE_T i = 0; i < std::min<SIZE_T>(bytes_read, 16); ++i) {
+                    hex_bytes += fmt::format("{:02x} ", code_bytes[i]);
+                }
+                LOG_CRITICAL(Debug, "Code bytes at RIP: {}", hex_bytes);
+
+#ifdef ARCH_X86_64
+                u64 current_rip = ctx->Rip;
+                u64 offset = 0;
+                for (int inst_idx = 0; inst_idx < 4 && offset < bytes_read; ++inst_idx) {
+                    ZydisDecodedInstruction instruction;
+                    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+                    const auto status = Common::Decoder::Instance()->decodeInstruction(
+                        instruction, operands, code_bytes + offset, bytes_read - offset);
+                    if (ZYAN_SUCCESS(status)) {
+                        const auto disasm = Common::Decoder::Instance()->disassembleInst(
+                            instruction, operands, current_rip);
+                        LOG_CRITICAL(Debug, "  => {:#018x}: {}", current_rip, disasm);
+                        offset += instruction.length;
+                        current_rip += instruction.length;
+                    } else {
+                        break;
+                    }
+                }
+#endif
+            }
+
+            // Dump stack
+            LOG_CRITICAL(Debug, "Stack dump (RSP = {:#018x}):", ctx->Rsp);
+            for (int i = 0; i < 16; ++i) {
+                u64 stack_val = 0;
+                const auto stack_addr = ctx->Rsp + i * sizeof(u64);
+                if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(stack_addr),
+                                      &stack_val, sizeof(stack_val), &bytes_read) &&
+                    bytes_read == sizeof(stack_val)) {
+                    LOG_CRITICAL(Debug, "  [RSP+{:#04x}]: {:#018x}", i * sizeof(u64), stack_val);
+                } else {
+                    LOG_CRITICAL(Debug, "  [RSP+{:#04x}]: <inaccessible>", i * sizeof(u64));
+                    break;
+                }
+            }
+        }
+
         Common::Singleton<Core::Emulator>::Instance()->Shutdown();
     }
 
