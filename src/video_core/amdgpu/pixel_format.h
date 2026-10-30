@@ -27,6 +27,7 @@ enum class DataFormat : u32 {
     Format16_16_16_16 = 12,
     Format32_32_32 = 13,
     Format32_32_32_32 = 14,
+    FormatReserved_15 = 15,
     Format5_6_5 = 16,
     Format1_5_5_5 = 17,
     Format5_5_5_1 = 18,
@@ -207,6 +208,8 @@ constexpr DataFormat RemapDataFormat(const DataFormat format) {
         return DataFormat::Format2_10_10_10;
     case DataFormat::Format5_5_5_1:
         return DataFormat::Format1_5_5_5;
+    case DataFormat::FormatReserved_15:
+        return DataFormat::Format32_32_32_32;
     default:
         return format;
     }

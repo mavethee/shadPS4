@@ -39,6 +39,8 @@ std::string_view NameOf(DataFormat fmt) {
         return "Format32_32_32";
     case DataFormat::Format32_32_32_32:
         return "Format32_32_32_32";
+    case DataFormat::FormatReserved_15:
+        return "FormatReserved_15";
     case DataFormat::Format5_6_5:
         return "Format5_6_5";
     case DataFormat::Format1_5_5_5:
@@ -127,7 +129,7 @@ constexpr std::array<s32, NUM_ENTRIES> NUM_COMPONENTS = {
     4, // 12 Format16_16_16_16
     3, // 13 Format32_32_32
     4, // 14 Format32_32_32_32
-    0, // 15
+    4, // 15 FormatReserved_15
     3, // 16 Format5_6_5
     4, // 17 Format1_5_5_5
     4, // 18 Format5_5_5_1
@@ -172,7 +174,7 @@ constexpr std::array<s32, NUM_ENTRIES> BITS_PER_BLOCK = {
     64,  // 12 Format16_16_16_16
     96,  // 13 Format32_32_32
     128, // 14 Format32_32_32_32
-    -1,  // 15
+    128, // 15 FormatReserved_15
     16,  // 16 Format5_6_5
     16,  // 17 Format1_5_5_5
     16,  // 18 Format5_5_5_1
@@ -217,7 +219,7 @@ constexpr std::array<s32, NUM_ENTRIES> BITS_PER_ELEMENT = {
     64,  // 12 Format16_16_16_16
     96,  // 13 Format32_32_32
     128, // 14 Format32_32_32_32
-    -1,  // 15
+    128, // 15 FormatReserved_15
     16,  // 16 Format5_6_5
     16,  // 17 Format1_5_5_5
     16,  // 18 Format5_5_5_1

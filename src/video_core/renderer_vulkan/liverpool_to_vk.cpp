@@ -488,6 +488,7 @@ static constexpr vk::FormatFeatureFlags2 GetDataFormatFeatureFlags(
     case AmdGpu::DataFormat::Format32_32:
     case AmdGpu::DataFormat::Format16_16_16_16:
     case AmdGpu::DataFormat::Format32_32_32_32:
+    case AmdGpu::DataFormat::FormatReserved_15:
         return BufferRead | BufferWrite | ImageRead | ImageWrite | Mrt;
     case AmdGpu::DataFormat::Format32_32_32:
         return BufferRead | BufferWrite | ImageRead;
@@ -719,6 +720,13 @@ static constexpr std::array formats{
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format32_32_32_32, AmdGpu::NumberFormat::Sint,
                             vk::Format::eR32G32B32A32Sint),
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format32_32_32_32, AmdGpu::NumberFormat::Float,
+                            vk::Format::eR32G32B32A32Sfloat),
+    // Reserved 15
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatReserved_15, AmdGpu::NumberFormat::Uint,
+                            vk::Format::eR32G32B32A32Uint),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatReserved_15, AmdGpu::NumberFormat::Sint,
+                            vk::Format::eR32G32B32A32Sint),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::FormatReserved_15, AmdGpu::NumberFormat::Float,
                             vk::Format::eR32G32B32A32Sfloat),
     // 5_6_5
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format5_6_5, AmdGpu::NumberFormat::Unorm,
@@ -1115,6 +1123,7 @@ vk::ClearValue ColorBufferClearValue(const AmdGpu::ColorBuffer& color_buffer) {
         }
         break;
     case AmdGpu::DataFormat::Format32_32_32_32:
+    case AmdGpu::DataFormat::FormatReserved_15:
         switch (number_type) {
         case AmdGpu::NumberFormat::Uint:
         case AmdGpu::NumberFormat::Sint:
