@@ -98,6 +98,8 @@ constexpr size_t GetSurfaceFormatTableIndex(AmdGpu::DataFormat data_format,
 
 constexpr vk::Format SurfaceFormat(AmdGpu::DataFormat data_format,
                                    AmdGpu::NumberFormat num_format) noexcept {
+    data_format = AmdGpu::RemapDataFormat(data_format);
+    num_format = AmdGpu::RemapNumberFormat(num_format, data_format);
     vk::Format result = surface_format_table[GetSurfaceFormatTableIndex(data_format, num_format)];
     bool found =
         result != vk::Format::eUndefined || data_format == AmdGpu::DataFormat::FormatInvalid;

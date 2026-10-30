@@ -997,6 +997,14 @@ U32 IREmitter::Pack10_11_11(const AmdGpu::NumberFormat number_format, const Valu
     switch (number_format) {
     case AmdGpu::NumberFormat::Float:
         return Inst<U32>(Opcode::PackUfloat10_11_11, vector);
+    case AmdGpu::NumberFormat::Unorm:
+        return Inst<U32>(Opcode::PackUnorm2_10_10_10, vector);
+    case AmdGpu::NumberFormat::Snorm:
+        return Inst<U32>(Opcode::PackSnorm2_10_10_10, vector);
+    case AmdGpu::NumberFormat::Uint:
+        return Inst<U32>(Opcode::PackUint2_10_10_10, vector);
+    case AmdGpu::NumberFormat::Sint:
+        return Inst<U32>(Opcode::PackSint2_10_10_10, vector);
     default:
         UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
     }
@@ -1036,6 +1044,14 @@ Value IREmitter::Unpack10_11_11(const AmdGpu::NumberFormat number_format, const 
     switch (number_format) {
     case AmdGpu::NumberFormat::Float:
         return Inst(Opcode::UnpackUfloat10_11_11, value);
+    case AmdGpu::NumberFormat::Unorm:
+        return Inst(Opcode::UnpackUnorm2_10_10_10, value);
+    case AmdGpu::NumberFormat::Snorm:
+        return Inst(Opcode::UnpackSnorm2_10_10_10, value);
+    case AmdGpu::NumberFormat::Uint:
+        return Inst(Opcode::UnpackUint2_10_10_10, value);
+    case AmdGpu::NumberFormat::Sint:
+        return Inst(Opcode::UnpackSint2_10_10_10, value);
     default:
         UNREACHABLE_MSG("Unsupported 10_11_11 number format: {}", number_format);
     }

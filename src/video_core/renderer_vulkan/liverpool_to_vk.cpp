@@ -654,6 +654,14 @@ static constexpr std::array formats{
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format16_16, AmdGpu::NumberFormat::Float,
                             vk::Format::eR16G16Sfloat),
     // 10_11_11
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Unorm,
+                            vk::Format::eA2B10G10R10UnormPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Snorm,
+                            vk::Format::eA2B10G10R10SnormPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Uint,
+                            vk::Format::eA2B10G10R10UintPack32),
+    CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Sint,
+                            vk::Format::eA2B10G10R10SintPack32),
     CreateSurfaceFormatInfo(AmdGpu::DataFormat::Format10_11_11, AmdGpu::NumberFormat::Float,
                             vk::Format::eB10G11R11UfloatPack32),
     // 11_11_10 - Remapped to 10_11_11.
