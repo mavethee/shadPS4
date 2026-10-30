@@ -99,7 +99,7 @@ int PS4_SYSV_ABI sceVideodecDeleteDecoder(OrbisVideodecCtrl* pCtrlIn);
 int PS4_SYSV_ABI sceVideodecFlush(OrbisVideodecCtrl* pCtrlIn,
                                   OrbisVideodecFrameBuffer* pFrameBufferInOut,
                                   OrbisVideodecPictureInfo* pPictureInfoOut);
-int PS4_SYSV_ABI sceVideodecMapMemory();
+int PS4_SYSV_ABI sceVideodecMapMemory(OrbisVideodecCtrl* pCtrlIn, const void* pMemInfoIn);
 int PS4_SYSV_ABI sceVideodecQueryResourceInfo(const OrbisVideodecConfigInfo* pCfgInfoIn,
                                               OrbisVideodecResourceInfo* pRsrcInfoOut);
 int PS4_SYSV_ABI sceVideodecReset(OrbisVideodecCtrl* pCtrlIn);

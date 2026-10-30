@@ -29,8 +29,14 @@ VdecDecoder::VdecDecoder(const OrbisVideodecConfigInfo& pCfgInfoIn,
 }
 
 VdecDecoder::~VdecDecoder() {
-    avcodec_free_context(&mCodecContext);
-    sws_freeContext(mSwsContext);
+    std::scoped_lock lock{mMutex};
+    if (mCodecContext) {
+        avcodec_free_context(&mCodecContext);
+    }
+    if (mSwsContext) {
+        sws_freeContext(mSwsContext);
+        mSwsContext = nullptr;
+    }
 }
 
 s32 VdecDecoder::Decode(const OrbisVideodecInputData& pInputDataIn,
@@ -43,6 +49,11 @@ s32 VdecDecoder::Decode(const OrbisVideodecInputData& pInputDataIn,
     }
     if (pInputDataIn.auSize == 0) {
         return ORBIS_VIDEODEC_ERROR_AU_SIZE;
+    }
+
+    std::scoped_lock lock{mMutex};
+    if (!mCodecContext) {
+        return ORBIS_VIDEODEC_ERROR_API_FAIL;
     }
 
     AVPacket* packet = av_packet_alloc();
@@ -134,6 +145,11 @@ s32 VdecDecoder::Flush(OrbisVideodecFrameBuffer& pFrameBufferInOut,
                        OrbisVideodecPictureInfo& pPictureInfoOut) {
     pPictureInfoOut.isValid = false;
 
+    std::scoped_lock lock{mMutex};
+    if (!mCodecContext) {
+        return ORBIS_VIDEODEC_ERROR_API_FAIL;
+    }
+
     AVFrame* frame = av_frame_alloc();
     if (!frame) {
         LOG_ERROR(Lib_Videodec, "Failed to allocate frame");
@@ -199,7 +215,10 @@ s32 VdecDecoder::Flush(OrbisVideodecFrameBuffer& pFrameBufferInOut,
 }
 
 s32 VdecDecoder::Reset() {
-    avcodec_flush_buffers(mCodecContext);
+    std::scoped_lock lock{mMutex};
+    if (mCodecContext) {
+        avcodec_flush_buffers(mCodecContext);
+    }
     return ORBIS_OK;
 }
 

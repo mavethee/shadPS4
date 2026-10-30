@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <vector>
 
 #include "videodec.h"
@@ -31,6 +32,7 @@ private:
     AVFrame* ConvertNV12Frame(AVFrame& frame);
 
 private:
+    std::mutex mMutex;
     AVCodecContext* mCodecContext = nullptr;
     SwsContext* mSwsContext = nullptr;
 };

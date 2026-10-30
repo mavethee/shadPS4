@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
 #include "common/alignment.h"
 #include "common/logging/log.h"
 #include "core/libraries/libs.h"
@@ -11,6 +17,13 @@
 namespace Libraries::Videodec {
 
 static constexpr u64 kFallbackMemorySize = 16_MB;
+
+// Native PS4 libSceVideodec control block magic ("MF049BI\0")
+static constexpr u64 kVideodecHeaderMagic = 0x4942393430464dULL;
+
+static std::mutex g_decoder_mutex;
+static std::unordered_map<void*, std::unique_ptr<VdecDecoder>> g_decoders;
+static std::unordered_map<void*, void*> g_decoder_lookup;
 
 static u64 ComputeFrameSizeBytes(s32 width, s32 height) {
     if (width <= 0 || height <= 0) {
@@ -49,6 +62,25 @@ static void ComputeWorstCaseDimensions(const OrbisVideodecConfigInfo& cfg, s32& 
     }
 }
 
+static VdecDecoder* GetDecoder(const OrbisVideodecCtrl* pCtrlIn) {
+    if (!pCtrlIn || !pCtrlIn->handle) {
+        return nullptr;
+    }
+    std::scoped_lock lock{g_decoder_mutex};
+    auto it = g_decoders.find(pCtrlIn->handle);
+    if (it != g_decoders.end()) {
+        return it->second.get();
+    }
+    auto it_lookup = g_decoder_lookup.find(pCtrlIn->handle);
+    if (it_lookup != g_decoder_lookup.end()) {
+        auto it2 = g_decoders.find(it_lookup->second);
+        if (it2 != g_decoders.end()) {
+            return it2->second.get();
+        }
+    }
+    return nullptr;
+}
+
 int PS4_SYSV_ABI sceVideodecCreateDecoder(const OrbisVideodecConfigInfo* pCfgInfoIn,
                                           const OrbisVideodecResourceInfo* pRsrcInfoIn,
                                           OrbisVideodecCtrl* pCtrlOut) {
@@ -58,16 +90,41 @@ int PS4_SYSV_ABI sceVideodecCreateDecoder(const OrbisVideodecConfigInfo* pCfgInf
         LOG_ERROR(Lib_Videodec, "Invalid arguments");
         return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
     }
-    if (pCfgInfoIn->thisSize != sizeof(OrbisVideodecConfigInfo) ||
-        pRsrcInfoIn->thisSize != sizeof(OrbisVideodecResourceInfo)) {
-        LOG_ERROR(Lib_Videodec, "Invalid struct size");
+    if ((pCfgInfoIn->thisSize != sizeof(OrbisVideodecConfigInfo) && pCfgInfoIn->thisSize != 0x20) ||
+        pRsrcInfoIn->thisSize != sizeof(OrbisVideodecResourceInfo) ||
+        pCtrlOut->thisSize != sizeof(OrbisVideodecCtrl)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size (cfg: {:#x}, rsrc: {:#x}, ctrl: {:#x})",
+                  pCfgInfoIn->thisSize, pRsrcInfoIn->thisSize, pCtrlOut->thisSize);
         return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
     }
 
-    VdecDecoder* decoder = new VdecDecoder(*pCfgInfoIn, *pRsrcInfoIn);
+    auto decoder = std::make_unique<VdecDecoder>(*pCfgInfoIn, *pRsrcInfoIn);
+    VdecDecoder* decoder_ptr = decoder.get();
+
+    void* handle = pRsrcInfoIn->pCpuMemory ? pRsrcInfoIn->pCpuMemory : decoder_ptr;
+
+    if (pRsrcInfoIn->pCpuMemory) {
+        u8* cpu_mem = static_cast<u8*>(pRsrcInfoIn->pCpuMemory);
+        const size_t init_size = std::min<size_t>(pRsrcInfoIn->cpuMemorySize, 0x1000);
+        std::memset(cpu_mem, 0, init_size);
+
+        // Native libSceVideodec header: magic "MF049BI\0" at +0x00 and internal decoder pointer at
+        // +0x50
+        *reinterpret_cast<u64*>(cpu_mem) = kVideodecHeaderMagic;
+        *reinterpret_cast<void**>(cpu_mem + 0x50) = decoder_ptr;
+    }
+
+    {
+        std::scoped_lock lock{g_decoder_mutex};
+        g_decoders[handle] = std::move(decoder);
+        if (handle != decoder_ptr) {
+            g_decoder_lookup[decoder_ptr] = handle;
+        }
+    }
+
     pCtrlOut->thisSize = sizeof(OrbisVideodecCtrl);
-    pCtrlOut->handle = decoder;
-    pCtrlOut->version = 1;
+    pCtrlOut->handle = handle;
+    pCtrlOut->version = 0;
     return ORBIS_OK;
 }
 
@@ -76,34 +133,60 @@ int PS4_SYSV_ABI sceVideodecDecode(OrbisVideodecCtrl* pCtrlIn,
                                    OrbisVideodecFrameBuffer* pFrameBufferInOut,
                                    OrbisVideodecPictureInfo* pPictureInfoOut) {
     LOG_TRACE(Lib_Videodec, "called");
-    if (!pCtrlIn || !pInputDataIn || !pPictureInfoOut) {
+    if (!pCtrlIn || !pInputDataIn || !pPictureInfoOut || !pFrameBufferInOut) {
         LOG_ERROR(Lib_Videodec, "Invalid arguments");
         return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
     }
     if (pCtrlIn->thisSize != sizeof(OrbisVideodecCtrl) ||
-        pFrameBufferInOut->thisSize != sizeof(OrbisVideodecFrameBuffer)) {
-        LOG_ERROR(Lib_Videodec, "Invalid struct size");
+        (pFrameBufferInOut->thisSize != sizeof(OrbisVideodecFrameBuffer) &&
+         pFrameBufferInOut->thisSize != 0x20)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size (ctrl: {:#x}, fb: {:#x})", pCtrlIn->thisSize,
+                  pFrameBufferInOut->thisSize);
         return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
     }
 
-    VdecDecoder* decoder = (VdecDecoder*)pCtrlIn->handle;
+    VdecDecoder* decoder = GetDecoder(pCtrlIn);
     if (!decoder) {
-        LOG_ERROR(Lib_Videodec, "Invalid decoder handle");
+        LOG_ERROR(Lib_Videodec, "Invalid decoder handle: {}", (void*)pCtrlIn->handle);
         return ORBIS_VIDEODEC_ERROR_HANDLE;
     }
     return decoder->Decode(*pInputDataIn, *pFrameBufferInOut, *pPictureInfoOut);
 }
 
 int PS4_SYSV_ABI sceVideodecDeleteDecoder(OrbisVideodecCtrl* pCtrlIn) {
-    LOG_INFO(Lib_Videodec, "(STUBBED) called");
+    LOG_INFO(Lib_Videodec, "called");
 
-    VdecDecoder* decoder = (VdecDecoder*)pCtrlIn->handle;
-    if (!decoder) {
-        LOG_ERROR(Lib_Videodec, "Invalid decoder handle");
-        return ORBIS_VIDEODEC_ERROR_HANDLE;
+    if (!pCtrlIn) {
+        LOG_ERROR(Lib_Videodec, "Invalid arguments");
+        return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
     }
-    delete decoder;
-    return ORBIS_OK;
+    if (pCtrlIn->thisSize != sizeof(OrbisVideodecCtrl)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size: {:#x}", pCtrlIn->thisSize);
+        return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
+    }
+
+    std::scoped_lock lock{g_decoder_mutex};
+    auto it = g_decoders.find(pCtrlIn->handle);
+    if (it != g_decoders.end()) {
+        g_decoder_lookup.erase(it->second.get());
+        g_decoders.erase(it);
+        pCtrlIn->handle = nullptr;
+        return ORBIS_OK;
+    }
+
+    auto it_lookup = g_decoder_lookup.find(pCtrlIn->handle);
+    if (it_lookup != g_decoder_lookup.end()) {
+        auto it2 = g_decoders.find(it_lookup->second);
+        if (it2 != g_decoders.end()) {
+            g_decoders.erase(it2);
+        }
+        g_decoder_lookup.erase(it_lookup);
+        pCtrlIn->handle = nullptr;
+        return ORBIS_OK;
+    }
+
+    LOG_ERROR(Lib_Videodec, "Invalid decoder handle: {}", (void*)pCtrlIn->handle);
+    return ORBIS_VIDEODEC_ERROR_HANDLE;
 }
 
 int PS4_SYSV_ABI sceVideodecFlush(OrbisVideodecCtrl* pCtrlIn,
@@ -111,26 +194,36 @@ int PS4_SYSV_ABI sceVideodecFlush(OrbisVideodecCtrl* pCtrlIn,
                                   OrbisVideodecPictureInfo* pPictureInfoOut) {
     LOG_INFO(Lib_Videodec, "called");
 
-    if (!pFrameBufferInOut || !pPictureInfoOut) {
+    if (!pCtrlIn || !pFrameBufferInOut || !pPictureInfoOut) {
         LOG_ERROR(Lib_Videodec, "Invalid arguments");
         return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
     }
-    if (pFrameBufferInOut->thisSize != sizeof(OrbisVideodecFrameBuffer) ||
-        pPictureInfoOut->thisSize != sizeof(OrbisVideodecPictureInfo)) {
-        LOG_ERROR(Lib_Videodec, "Invalid struct size");
+    if (pCtrlIn->thisSize != sizeof(OrbisVideodecCtrl) ||
+        (pFrameBufferInOut->thisSize != sizeof(OrbisVideodecFrameBuffer) &&
+         pFrameBufferInOut->thisSize != 0x20)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size (ctrl: {:#x}, fb: {:#x})", pCtrlIn->thisSize,
+                  pFrameBufferInOut->thisSize);
         return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
     }
 
-    VdecDecoder* decoder = (VdecDecoder*)pCtrlIn->handle;
+    VdecDecoder* decoder = GetDecoder(pCtrlIn);
     if (!decoder) {
-        LOG_ERROR(Lib_Videodec, "Invalid decoder handle");
+        LOG_ERROR(Lib_Videodec, "Invalid decoder handle: {}", (void*)pCtrlIn->handle);
         return ORBIS_VIDEODEC_ERROR_HANDLE;
     }
     return decoder->Flush(*pFrameBufferInOut, *pPictureInfoOut);
 }
 
-int PS4_SYSV_ABI sceVideodecMapMemory() {
-    LOG_ERROR(Lib_Videodec, "(STUBBED) called");
+int PS4_SYSV_ABI sceVideodecMapMemory(OrbisVideodecCtrl* pCtrlIn, const void* pMemInfoIn) {
+    LOG_INFO(Lib_Videodec, "called");
+    if (!pCtrlIn || !pMemInfoIn) {
+        LOG_ERROR(Lib_Videodec, "Invalid arguments");
+        return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
+    }
+    if (pCtrlIn->thisSize != sizeof(OrbisVideodecCtrl)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size: {:#x}", pCtrlIn->thisSize);
+        return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
+    }
     return ORBIS_OK;
 }
 
@@ -142,9 +235,10 @@ int PS4_SYSV_ABI sceVideodecQueryResourceInfo(const OrbisVideodecConfigInfo* pCf
         LOG_ERROR(Lib_Videodec, "Invalid arguments");
         return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
     }
-    if (pCfgInfoIn->thisSize != sizeof(OrbisVideodecConfigInfo) ||
+    if ((pCfgInfoIn->thisSize != sizeof(OrbisVideodecConfigInfo) && pCfgInfoIn->thisSize != 0x20) ||
         pRsrcInfoOut->thisSize != sizeof(OrbisVideodecResourceInfo)) {
-        LOG_ERROR(Lib_Videodec, "Invalid struct size");
+        LOG_ERROR(Lib_Videodec, "Invalid struct size (cfg: {:#x}, rsrc: {:#x})",
+                  pCfgInfoIn->thisSize, pRsrcInfoOut->thisSize);
         return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
     }
 
@@ -187,11 +281,32 @@ int PS4_SYSV_ABI sceVideodecQueryResourceInfo(const OrbisVideodecConfigInfo* pCf
 }
 
 int PS4_SYSV_ABI sceVideodecReset(OrbisVideodecCtrl* pCtrlIn) {
-    LOG_INFO(Lib_Videodec, "(STUBBED) called");
+    LOG_INFO(Lib_Videodec, "called");
 
-    VdecDecoder* decoder = (VdecDecoder*)pCtrlIn->handle;
-    decoder->Reset();
-    return ORBIS_OK;
+    if (!pCtrlIn) {
+        LOG_ERROR(Lib_Videodec, "Invalid arguments");
+        return ORBIS_VIDEODEC_ERROR_ARGUMENT_POINTER;
+    }
+    if (pCtrlIn->thisSize != sizeof(OrbisVideodecCtrl)) {
+        LOG_ERROR(Lib_Videodec, "Invalid struct size: {:#x}", pCtrlIn->thisSize);
+        return ORBIS_VIDEODEC_ERROR_STRUCT_SIZE;
+    }
+
+    VdecDecoder* decoder = GetDecoder(pCtrlIn);
+    if (!decoder) {
+        LOG_ERROR(Lib_Videodec, "Invalid decoder handle: {}", (void*)pCtrlIn->handle);
+        return ORBIS_VIDEODEC_ERROR_HANDLE;
+    }
+
+    // Console firmware resets state fields in pCpuMemory if handle points to it
+    if (pCtrlIn->handle) {
+        u8* mem = static_cast<u8*>(pCtrlIn->handle);
+        *reinterpret_cast<u64*>(mem + 0x08) = 0;
+        *reinterpret_cast<u32*>(mem + 0x38) = 0;
+        *reinterpret_cast<u64*>(mem + 0x40) = 0;
+    }
+
+    return decoder->Reset();
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
