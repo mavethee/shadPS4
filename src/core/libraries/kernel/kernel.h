@@ -57,8 +57,26 @@ enum OrbisKernelProcessType : s32 {
     ORBIS_KERNEL_PROCESS_TYPE_NONGAME_MINI_APP = 3,
 };
 
+struct OrbisKernelOpenPsId {
+    u8 data[16];
+};
+static_assert(sizeof(OrbisKernelOpenPsId) == 0x10);
+
+struct OrbisKernelIdPs {
+    u8 data[16];
+};
+static_assert(sizeof(OrbisKernelIdPs) == 0x10);
+
 s32 PS4_SYSV_ABI sceKernelGetProcessType(s32 pid);
-s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* psid);
+s32 PS4_SYSV_ABI sceKernelGetOpenPsId(OrbisKernelOpenPsId* psid);
+s32 PS4_SYSV_ABI sceKernelGetOpenPsIdForSystem(OrbisKernelOpenPsId* psid);
+s32 PS4_SYSV_ABI sceKernelGetIdPs(OrbisKernelIdPs* idps);
+
+s32 PS4_SYSV_ABI posix_sysctlbyname(const char* name, void* oldp, size_t* oldlenp, const void* newp,
+                                    size_t newlen);
+s32 PS4_SYSV_ABI posix_sysctl(const s32* name, u32 namelen, void* oldp, size_t* oldlenp,
+                              const void* newp, size_t newlen);
+s32 PS4_SYSV_ABI posix_sysctlnametomib(const char* name, s32* mibp, size_t* sizep);
 
 struct AuthInfoData {
     u64 paid;

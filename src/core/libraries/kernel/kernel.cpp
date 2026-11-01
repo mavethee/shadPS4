@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <random>
+#include <span>
 #include <thread>
 #include <boost/asio/io_context.hpp>
 
@@ -11,6 +13,7 @@
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
 #include "common/va_ctx.h"
+#include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/coredump/coredump.h"
@@ -331,15 +334,335 @@ s32 PS4_SYSV_ABI __sys_regmgr_call(u32 op, u32 key, void* result, void* value, u
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* psid) {
+namespace {
+
+u8 GetConsoleTargetId() {
+    if (EmulatorSettings.IsDevKit()) {
+        return 0x80; // Tool / DevKit
+    }
+
+    const auto* elf_info = Common::Singleton<Common::ElfInfo>::Instance();
+    if (elf_info && elf_info->IsInitialized()) {
+        const auto serial = elf_info->GameSerial();
+        if (serial.starts_with("PCJS") || serial.starts_with("PLJS") ||
+            serial.starts_with("PCJM") || serial.starts_with("PLAS") ||
+            serial.starts_with("PCAS")) {
+            return 0x81; // Japan
+        }
+    }
+
+    switch (EmulatorSettings.GetConsoleLanguage()) {
+    case 0: // Japanese
+        return 0x81;
+    case 1:          // English (United States)
+    case 17:         // Portuguese (Brazil)
+    case 20:         // Spanish (Latin America)
+    case 22:         // French (Canada)
+        return 0x82; // North America (CEX)
+    case 9:          // Korean
+        return 0x84; // Korea
+    case 10:         // Traditional Chinese
+        return 0x88; // Taiwan / Hong Kong
+    case 11:         // Simplified Chinese
+        return 0x8A; // China
+    case 8:          // Russian
+        return 0x89; // Russia
+    case 27:         // Thai
+    case 28:         // Vietnamese
+    case 29:         // Indonesian
+        return 0x87; // Southeast Asia
+    default:
+        // Polish (16), UK English (18), German (4), French (2), Spanish (3),
+        // Italian (5), Dutch (6), Portuguese (7), Danish (14), Norwegian (15),
+        // Swedish (13), Finnish (12), Czech (23), Hungarian (24), Greek (25),
+        // Romanian (26), Turkish (19), Arabic (21), Ukrainian (30)
+        return 0x85; // Europe / UK / Poland (CEX)
+    }
+}
+
+OrbisKernelIdPs GetSystemIdPs() {
+    OrbisKernelIdPs idps{};
+    // Platform ID: 00 00 00 01 (PlayStation 4)
+    idps.data[0] = 0x00;
+    idps.data[1] = 0x00;
+    idps.data[2] = 0x00;
+    idps.data[3] = 0x01;
+
+    // Target ID (Region)
+    idps.data[4] = 0x00;
+    idps.data[5] = GetConsoleTargetId();
+
+    // Model / Chassis: 0x0007 (PS4 Pro / Neo) vs 0x0001 (PS4 Fat / Liverpool)
+    const bool is_pro = sceKernelIsNeoMode() != 0;
+    idps.data[6] = 0x00;
+    idps.data[7] = is_pro ? 0x07 : 0x01;
+
+    // Serial / Board Unique ID (Deterministic hash based on Target ID + Chassis)
+    u64 serial_hash = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < 8; ++i) {
+        serial_hash = (serial_hash ^ idps.data[i]) * 0x100000001b3ULL;
+    }
+    for (size_t i = 8; i < 16; ++i) {
+        idps.data[i] = static_cast<u8>(serial_hash >> ((i - 8) * 8));
+    }
+    return idps;
+}
+
+OrbisKernelOpenPsId GetSystemOpenPsId() {
+    OrbisKernelOpenPsId id{};
+    // Little-endian seed representing 's','h','a','d','P','S','4'
+    constexpr u64 kBaseSeed = 0x0034535064616873ULL;
+    for (size_t i = 0; i < 7; ++i) {
+        id.data[i] = static_cast<u8>(kBaseSeed >> (i * 8));
+    }
+    id.data[7] = GetConsoleTargetId();
+
+    const u8 chassis_id = (sceKernelIsNeoMode() != 0) ? 0x07 : 0x01;
+
+    u64 hash = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < 8; ++i) {
+        hash = (hash ^ id.data[i]) * 0x100000001b3ULL;
+    }
+    hash = (hash ^ chassis_id) * 0x100000001b3ULL;
+
+    for (size_t i = 8; i < 16; ++i) {
+        id.data[i] = static_cast<u8>(hash >> ((i - 8) * 8));
+    }
+    return id;
+}
+
+constexpr s32 CTL_SYSCTL = 0;
+constexpr s32 CTL_KERN = 1;
+constexpr s32 CTL_HW = 6;
+constexpr s32 CTL_MACHDEP = 7;
+
+constexpr s32 CTL_SYSCTL_NAME2OID = 3;
+
+struct SysctlMibEntry {
+    std::string_view name;
+    std::vector<s32> mib;
+};
+
+static const std::vector<SysctlMibEntry> s_sysctl_mibs = {
+    {"machdep.openpsid", {CTL_MACHDEP, 1}},
+    {"machdep.openpsid_for_sys", {CTL_MACHDEP, 2}},
+    {"machdep.idps", {CTL_MACHDEP, 3}},
+    {"machdep.tsc_freq", {CTL_MACHDEP, 4}},
+    {"machdep.bootparams.base_ps4_mode", {CTL_MACHDEP, 5}},
+    {"machdep.rcmgr_intdev", {CTL_MACHDEP, 6}},
+    {"kern.neomode", {CTL_KERN, 100}},
+    {"kern.neomode_switch", {CTL_KERN, 101}},
+    {"kern.smp.cpus", {CTL_KERN, 102}},
+    {"kern.sdk_version", {CTL_KERN, 103}},
+    {"kern.rng_pseudo", {CTL_KERN, 104}},
+    {"kern.ostype", {CTL_KERN, 1}},
+    {"kern.osrelease", {CTL_KERN, 2}},
+    {"hw.model", {CTL_HW, 2}},
+    {"hw.ncpu", {CTL_HW, 3}},
+};
+
+s32 CopySysctl(void* oldp, size_t* oldlenp, const void* src, size_t len) {
+    if (oldlenp == nullptr && oldp != nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+    if (oldp == nullptr) {
+        if (oldlenp != nullptr) {
+            *oldlenp = len;
+        }
+        return 0;
+    }
+    if (*oldlenp < len) {
+        std::memcpy(oldp, src, *oldlenp);
+        *oldlenp = len;
+        *__Error() = POSIX_ENOMEM;
+        return -1;
+    }
+    std::memcpy(oldp, src, len);
+    *oldlenp = len;
+    return 0;
+}
+
+} // anonymous namespace
+
+s32 PS4_SYSV_ABI sceKernelGetOpenPsId(OrbisKernelOpenPsId* psid) {
     LOG_TRACE(Lib_Kernel, "called, psid = {}", fmt::ptr(psid));
     if (!psid) {
         return POSIX_EINVAL;
     }
-    static constexpr u8 default_psid[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
-    std::memcpy(psid, default_psid, sizeof(default_psid));
+    *psid = GetSystemOpenPsId();
     return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetOpenPsIdForSystem(OrbisKernelOpenPsId* psid) {
+    LOG_TRACE(Lib_Kernel, "called, psid = {}", fmt::ptr(psid));
+    return sceKernelGetOpenPsId(psid);
+}
+
+s32 PS4_SYSV_ABI sceKernelGetIdPs(OrbisKernelIdPs* idps) {
+    LOG_TRACE(Lib_Kernel, "called, idps = {}", fmt::ptr(idps));
+    if (!idps) {
+        return POSIX_EINVAL;
+    }
+    *idps = GetSystemIdPs();
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI posix_sysctlbyname(const char* name, void* oldp, size_t* oldlenp, const void* newp,
+                                    size_t newlen) {
+    if (name == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+
+    LOG_DEBUG(Lib_Kernel, "sysctlbyname: name = '{}'", name);
+
+    const std::string_view name_sv{name};
+
+    if (name_sv == "machdep.openpsid" || name_sv == "machdep.openpsid_for_sys") {
+        const auto psid = GetSystemOpenPsId();
+        return CopySysctl(oldp, oldlenp, &psid, sizeof(psid));
+    }
+    if (name_sv == "machdep.idps") {
+        const auto idps = GetSystemIdPs();
+        return CopySysctl(oldp, oldlenp, &idps, sizeof(idps));
+    }
+    if (name_sv == "kern.neomode") {
+        const s32 is_neo = sceKernelIsNeoMode();
+        return CopySysctl(oldp, oldlenp, &is_neo, sizeof(is_neo));
+    }
+    if (name_sv == "kern.neomode_switch") {
+        const s32 neo_switch = EmulatorSettings.IsNeo() ? 1 : 0;
+        return CopySysctl(oldp, oldlenp, &neo_switch, sizeof(neo_switch));
+    }
+    if (name_sv == "machdep.bootparams.base_ps4_mode") {
+        const s32 base_mode = sceKernelIsNeoMode() ? 0 : 1;
+        return CopySysctl(oldp, oldlenp, &base_mode, sizeof(base_mode));
+    }
+    if (name_sv == "machdep.tsc_freq") {
+        const u64 freq = sceKernelGetTscFrequency();
+        return CopySysctl(oldp, oldlenp, &freq, sizeof(freq));
+    }
+    if (name_sv == "hw.model") {
+        const char* model = sceKernelIsNeoMode() ? "PlayStation 4 Pro" : "PlayStation 4";
+        return CopySysctl(oldp, oldlenp, model, std::strlen(model) + 1);
+    }
+    if (name_sv == "hw.ncpu") {
+        const s32 ncpu = 8;
+        return CopySysctl(oldp, oldlenp, &ncpu, sizeof(ncpu));
+    }
+    if (name_sv == "kern.smp.cpus") {
+        s32 cpus = 6;
+        const auto* elf_info = Common::Singleton<Common::ElfInfo>::Instance();
+        if (elf_info && elf_info->IsInitialized()) {
+            if (elf_info->GetPSFAttributes().seven_cpu_mode) {
+                cpus = 7;
+            }
+        }
+        return CopySysctl(oldp, oldlenp, &cpus, sizeof(cpus));
+    }
+    if (name_sv == "kern.sdk_version") {
+        u32 sdk_ver = 0;
+        const auto* elf_info = Common::Singleton<Common::ElfInfo>::Instance();
+        if (elf_info && elf_info->IsInitialized()) {
+            sdk_ver = elf_info->CompiledSdkVer();
+        }
+        return CopySysctl(oldp, oldlenp, &sdk_ver, sizeof(sdk_ver));
+    }
+    if (name_sv == "kern.rng_pseudo") {
+        if (oldlenp == nullptr && oldp != nullptr) {
+            *__Error() = POSIX_EFAULT;
+            return -1;
+        }
+        if (oldp != nullptr && oldlenp != nullptr) {
+            static std::mt19937_64 rng(0x505334);
+            u8* out = static_cast<u8*>(oldp);
+            for (size_t i = 0; i < *oldlenp; ++i) {
+                out[i] = static_cast<u8>(rng());
+            }
+        }
+        return 0;
+    }
+    if (name_sv == "kern.ostype") {
+        constexpr const char* ostype = "FreeBSD";
+        return CopySysctl(oldp, oldlenp, ostype, std::strlen(ostype) + 1);
+    }
+    if (name_sv == "kern.osrelease") {
+        constexpr const char* osrel = "9.0-RELEASE";
+        return CopySysctl(oldp, oldlenp, osrel, std::strlen(osrel) + 1);
+    }
+    if (name_sv == "machdep.rcmgr_intdev") {
+        const s32 intdev = EmulatorSettings.IsDevKit() ? 1 : 0;
+        return CopySysctl(oldp, oldlenp, &intdev, sizeof(intdev));
+    }
+
+    LOG_WARNING(Lib_Kernel, "sysctlbyname: unknown mib '{}'", name);
+    *__Error() = POSIX_ENOENT;
+    return -1;
+}
+
+s32 PS4_SYSV_ABI posix_sysctlnametomib(const char* name, s32* mibp, size_t* sizep) {
+    if (name == nullptr || mibp == nullptr || sizep == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+
+    const std::string_view name_sv{name};
+    for (const auto& entry : s_sysctl_mibs) {
+        if (entry.name == name_sv) {
+            if (*sizep < entry.mib.size()) {
+                *sizep = entry.mib.size();
+                *__Error() = POSIX_ENOMEM;
+                return -1;
+            }
+            std::memcpy(mibp, entry.mib.data(), entry.mib.size() * sizeof(s32));
+            *sizep = entry.mib.size();
+            return 0;
+        }
+    }
+
+    LOG_WARNING(Lib_Kernel, "sysctlnametomib: unknown name '{}'", name);
+    *__Error() = POSIX_ENOENT;
+    return -1;
+}
+
+s32 PS4_SYSV_ABI posix_sysctl(const s32* name, u32 namelen, void* oldp, size_t* oldlenp,
+                              const void* newp, size_t newlen) {
+    if (name == nullptr || namelen == 0) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+
+    if (namelen >= 2 && name[0] == CTL_SYSCTL && name[1] == CTL_SYSCTL_NAME2OID) {
+        if (newp == nullptr || newlen == 0 || oldp == nullptr || oldlenp == nullptr) {
+            *__Error() = POSIX_EFAULT;
+            return -1;
+        }
+        const std::string name_str(static_cast<const char*>(newp), newlen);
+        size_t int_count = *oldlenp / sizeof(s32);
+        const s32 res =
+            posix_sysctlnametomib(name_str.c_str(), static_cast<s32*>(oldp), &int_count);
+        *oldlenp = int_count * sizeof(s32);
+        return res;
+    }
+
+    for (const auto& entry : s_sysctl_mibs) {
+        if (entry.mib.size() == namelen &&
+            std::memcmp(entry.mib.data(), name, namelen * sizeof(s32)) == 0) {
+            return posix_sysctlbyname(entry.name.data(), oldp, oldlenp, newp, newlen);
+        }
+    }
+
+    std::string mib_str;
+    for (u32 i = 0; i < namelen; ++i) {
+        if (i > 0) {
+            mib_str += ", ";
+        }
+        mib_str += std::to_string(name[i]);
+    }
+    LOG_WARNING(Lib_Kernel, "sysctl: unknown mib [{}]", mib_str);
+    *__Error() = POSIX_ENOENT;
+    return -1;
 }
 
 // Nominally: long sysconf(int name);
@@ -554,6 +877,17 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("FJmglmTMdr4", "libkernel", 1, "libkernel", getargv);
     LIB_FUNCTION("DLORcroUqbc", "libkernel", 1, "libkernel", sceKernelGetOpenPsId);
     LIB_FUNCTION("DLORcroUqbc", "libSceOpenPsId", 1, "libkernel", sceKernelGetOpenPsId);
+    LIB_FUNCTION("ul57hvm6mBc", "libkernel", 1, "libkernel", sceKernelGetOpenPsIdForSystem);
+    LIB_FUNCTION("lZG-WlKxRqQ", "libkernel", 1, "libkernel", sceKernelGetIdPs);
+    LIB_FUNCTION("MhC53TKmjVA", "libkernel", 1, "libkernel", posix_sysctlbyname);
+    LIB_FUNCTION("MhC53TKmjVA", "libkernel_sys", 1, "libkernel", posix_sysctlbyname);
+    LIB_FUNCTION("MhC53TKmjVA", "libkernel_web", 1, "libkernel", posix_sysctlbyname);
+    LIB_FUNCTION("DFmMT80xcNI", "libkernel", 1, "libkernel", posix_sysctl);
+    LIB_FUNCTION("DFmMT80xcNI", "libkernel_sys", 1, "libkernel", posix_sysctl);
+    LIB_FUNCTION("DFmMT80xcNI", "libkernel_web", 1, "libkernel", posix_sysctl);
+    LIB_FUNCTION("UkEV4hvMo1E", "libkernel", 1, "libkernel", posix_sysctlnametomib);
+    LIB_FUNCTION("UkEV4hvMo1E", "libkernel_sys", 1, "libkernel", posix_sysctlnametomib);
+    LIB_FUNCTION("UkEV4hvMo1E", "libkernel_web", 1, "libkernel", posix_sysctlnametomib);
 }
 
 } // namespace Libraries::Kernel
