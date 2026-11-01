@@ -91,7 +91,7 @@ s32 PS4_SYSV_ABI scePlayGoGetEta(OrbisPlayGoHandle handle, const OrbisPlayGoChun
 
 s32 PS4_SYSV_ABI scePlayGoGetInstallSpeed(OrbisPlayGoHandle handle,
                                           OrbisPlayGoInstallSpeed* outSpeed) {
-    LOG_INFO(Lib_PlayGo, "called");
+    LOG_DEBUG(Lib_PlayGo, "called");
 
     if (handle != PlaygoHandle) {
         return ORBIS_PLAYGO_ERROR_BAD_HANDLE;
@@ -209,7 +209,7 @@ s32 PS4_SYSV_ABI scePlayGoGetProgress(OrbisPlayGoHandle handle, const OrbisPlayG
 
 s32 PS4_SYSV_ABI scePlayGoGetToDoList(OrbisPlayGoHandle handle, OrbisPlayGoToDo* outTodoList,
                                       u32 numberOfEntries, u32* outEntries) {
-    LOG_INFO(Lib_PlayGo, "called handle = {} numberOfEntries = {}", handle, numberOfEntries);
+    LOG_DEBUG(Lib_PlayGo, "called handle = {} numberOfEntries = {}", handle, numberOfEntries);
 
     if (handle != PlaygoHandle) {
         return ORBIS_PLAYGO_ERROR_BAD_HANDLE;
@@ -316,8 +316,6 @@ s32 PS4_SYSV_ABI scePlayGoPrefetch(OrbisPlayGoHandle handle, const OrbisPlayGoCh
 }
 
 s32 PS4_SYSV_ABI scePlayGoSetInstallSpeed(OrbisPlayGoHandle handle, OrbisPlayGoInstallSpeed speed) {
-    LOG_INFO(Lib_PlayGo, "called");
-
     if (handle != PlaygoHandle) {
         return ORBIS_PLAYGO_ERROR_BAD_HANDLE;
     }
@@ -331,10 +329,16 @@ s32 PS4_SYSV_ABI scePlayGoSetInstallSpeed(OrbisPlayGoHandle handle, OrbisPlayGoI
     case OrbisPlayGoInstallSpeed::Full:
         break;
     default:
-        return ORBIS_PLAYGO_ERROR_INVALID_ARGUMENT;
+        return ORBIS_PLAYGO_ERROR_BAD_SPEED;
     }
 
     std::scoped_lock lk{playgo->GetSpeedMutex()};
+    if (playgo->speed == speed) {
+        return ORBIS_OK;
+    }
+
+    LOG_INFO(Lib_PlayGo, "called, speed: {}", static_cast<u32>(speed));
+
     using namespace std::chrono;
     playgo->speed = speed;
     playgo->speed_tick =
@@ -347,7 +351,7 @@ s32 PS4_SYSV_ABI scePlayGoSetLanguageMask(OrbisPlayGoHandle handle,
                                           OrbisPlayGoLanguageMask languageMask) {
     LOG_INFO(Lib_PlayGo, "called");
 
-    if (handle != 1) {
+    if (handle != PlaygoHandle) {
         return ORBIS_PLAYGO_ERROR_BAD_HANDLE;
     }
     if (!playgo) {
