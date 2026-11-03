@@ -45,6 +45,7 @@ static void* AllocateStack(u64 size) {
         if (it->first == size) {
             void* stack = it->second;
             fiber_free_stacks.erase(it);
+            std::memset(stack, 0, size);
             return stack;
         }
     }
