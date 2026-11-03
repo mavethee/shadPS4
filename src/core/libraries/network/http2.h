@@ -54,14 +54,16 @@ using OrbisHttp2PreSendCallback = PS4_SYSV_ABI s32 (*)(s32 request_id, s32 ssl_i
                                                        void* user_arg);
 
 s32 PS4_SYSV_ABI sceHttp2AbortRequest(s32 req_id);
-s32 PS4_SYSV_ABI sceHttp2AddCookie(s32 tmpl_or_req_id, const char* url, const char* cookie);
+s32 PS4_SYSV_ABI sceHttp2AddCookie(s32 tmpl_or_req_id, const char* url, const char* cookie,
+                                   u64 cookie_len = 0);
 s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32 tmpl_or_req_id, const char* name, const char* value,
                                           u32 mode);
 s32 PS4_SYSV_ABI sceHttp2AuthCacheFlush(s32 tmpl_or_req_id);
-s32 PS4_SYSV_ABI sceHttp2CookieExport(s32 cookie_box_id, void* buf, u64* buf_len);
+s32 PS4_SYSV_ABI sceHttp2CookieExport(s32 cookie_box_id, void* buf, u64 buf_len,
+                                      u64* out_len = nullptr);
 s32 PS4_SYSV_ABI sceHttp2CookieFlush(s32 cookie_box_id);
 s32 PS4_SYSV_ABI sceHttp2CookieImport(s32 cookie_box_id, const void* buf, u64 buf_len);
-s32 PS4_SYSV_ABI sceHttp2CreateCookieBox(s32 ctx_id);
+s32 PS4_SYSV_ABI sceHttp2CreateCookieBox(u64 pool_size);
 s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32 tmpl_id, const char* method, const char* url,
                                               u64 content_length);
 s32 PS4_SYSV_ABI sceHttp2CreateTemplate(s32 ctx_id, const char* user_agent, s32 http_ver,
