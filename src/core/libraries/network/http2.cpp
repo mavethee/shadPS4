@@ -6,6 +6,7 @@
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/network/http.h"
+#include "core/libraries/network/http_error.h"
 #include "core/libraries/network/http2.h"
 #include "core/libraries/network/http2_error.h"
 
@@ -17,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <cstring>
 #include <fmt/format.h>
 
 namespace Libraries::Http2 {
@@ -27,6 +29,20 @@ struct Http2RequestInfo {
     s32 conn_id{-1};
     s32 req_id{-1};
     bool is_websocket{false};
+    u32 ws_pong_timeout{10000000};
+    void* user_arg{nullptr};
+};
+
+struct Http2CookieBox {
+    s32 id{0};
+    u64 pool_size{0};
+    u32 max_num{300};
+    u32 max_num_per_domain{30};
+    u64 max_size{4096};
+};
+
+struct Http2PreSendCallbackEntry {
+    OrbisHttp2PreSendCallback cb{nullptr};
     void* user_arg{nullptr};
 };
 
@@ -43,6 +59,10 @@ std::map<s32, s32> templates_to_contexts{};
 std::map<s32, s32> requests_to_connections{};
 std::map<s32, Http2RequestInfo> requests_info{};
 std::map<s32, std::shared_ptr<Http2Context>> g_http2_contexts{};
+std::map<s32, Http2CookieBox> g_cookie_boxes{};
+std::map<s32, s32> g_tmpl_or_req_to_cookie_box{};
+std::map<s32, Http2PreSendCallbackEntry> g_presend_callbacks{};
+static std::atomic<s32> g_next_cookie_box_id{0x20000001};
 static std::atomic<s32> g_next_ws_req_id{0x6000};
 
 s32 PS4_SYSV_ABI sceHttp2AbortRequest(s32 req_id) {
@@ -54,9 +74,19 @@ s32 PS4_SYSV_ABI sceHttp2AbortRequest(s32 req_id) {
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2AddCookie(s32 tmpl_or_req_id, const char* url, const char* cookie) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, url={}", tmpl_or_req_id, url ? url : "null");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2AddCookie(s32 tmpl_or_req_id, const char* url, const char* cookie,
+                                   u64 cookie_len) {
+    LOG_INFO(Lib_Http2, "called id={}, url={}, cookie_len={}", tmpl_or_req_id, url ? url : "null",
+             cookie_len);
+    if (!url || !cookie) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    const u64 len = cookie_len ? cookie_len : std::strlen(cookie);
+    s32 result = Libraries::Http::sceHttpAddCookie(tmpl_or_req_id, url, cookie, len);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to add cookie, error = {:#x}", result);
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32 template_or_req_id, const char* name,
@@ -71,13 +101,24 @@ s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32 template_or_req_id, const char* na
 }
 
 s32 PS4_SYSV_ABI sceHttp2AuthCacheFlush(s32 tmpl_or_req_id) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}", tmpl_or_req_id);
-    return ORBIS_OK;
+    LOG_INFO(Lib_Http2, "called id={}", tmpl_or_req_id);
+    s32 result = Libraries::Http::sceHttpAuthCacheFlush(tmpl_or_req_id);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to flush auth cache, error = {:#x}", result);
+    }
+    return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2CookieExport(s32 cookie_box_id, void* buf, u64* buf_len) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called cookie_box_id={}", cookie_box_id);
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2CookieExport(s32 cookie_box_id, void* buf, u64 buf_len, u64* out_len) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, buf_len={}", cookie_box_id, buf_len);
+    if (!buf && buf_len > 0) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    s32 result = Libraries::Http::sceHttpCookieExport(cookie_box_id, buf, buf_len, out_len);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to export cookies, error = {:#x}", result);
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceHttp2CookieFlush(s32 cookie_box_id) {
@@ -90,9 +131,19 @@ s32 PS4_SYSV_ABI sceHttp2CookieImport(s32 cookie_box_id, const void* buf, u64 bu
     return Libraries::Http::sceHttpCookieImport(cookie_box_id, buf, buf_len);
 }
 
-s32 PS4_SYSV_ABI sceHttp2CreateCookieBox(s32 ctx_id) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called ctx_id={}", ctx_id);
-    return 1; // Return dummy valid cookie box ID
+s32 PS4_SYSV_ABI sceHttp2CreateCookieBox(u64 pool_size) {
+    LOG_INFO(Lib_Http2, "called pool_size={:#x}", pool_size);
+    if (pool_size < 0x10000) {
+        LOG_ERROR(Lib_Http2, "Invalid pool size {:#x}, minimum required is 0x10000", pool_size);
+        return ORBIS_HTTP2_ERROR_INVALID_POOL_SIZE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    s32 id = g_next_cookie_box_id.fetch_add(1);
+    Http2CookieBox box{};
+    box.id = id;
+    box.pool_size = pool_size;
+    g_cookie_boxes[id] = std::move(box);
+    return id;
 }
 
 s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32 tmpl_id, const char* method, const char* url,
@@ -151,7 +202,14 @@ s32 PS4_SYSV_ABI sceHttp2CreateTemplate(s32 ctx_id, const char* user_agent, s32 
 }
 
 s32 PS4_SYSV_ABI sceHttp2DeleteCookieBox(s32 cookie_box_id) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called cookie_box_id={}", cookie_box_id);
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}", cookie_box_id);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = g_cookie_boxes.find(cookie_box_id);
+    if (it == g_cookie_boxes.end()) {
+        LOG_ERROR(Lib_Http2, "Cookie box {} not found", cookie_box_id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    g_cookie_boxes.erase(it);
     return ORBIS_OK;
 }
 
@@ -160,6 +218,7 @@ s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32 req_id) {
     std::lock_guard<std::mutex> lock(g_http2_mutex);
 
     requests_info.erase(req_id);
+    g_tmpl_or_req_to_cookie_box.erase(req_id);
 
     const s32 result = Libraries::Http::sceHttpDeleteRequest(req_id);
     if (result < 0) {
@@ -187,6 +246,8 @@ s32 PS4_SYSV_ABI sceHttp2DeleteTemplate(s32 tmpl_id) {
     {
         std::lock_guard<std::mutex> lock(g_http2_mutex);
         templates_to_contexts.erase(tmpl_id);
+        g_tmpl_or_req_to_cookie_box.erase(tmpl_id);
+        g_presend_callbacks.erase(tmpl_id);
     }
     s32 result = Libraries::Http::sceHttpDeleteTemplate(tmpl_id);
     if (result < 0) {
@@ -232,17 +293,35 @@ s32 PS4_SYSV_ABI sceHttp2GetCookie(s32 tmpl_or_req_id, const char* url, char* co
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetCookieBox(s32 tmpl_or_req_id, s32* cookie_box_id) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}", tmpl_or_req_id);
-    if (cookie_box_id) {
-        *cookie_box_id = 1;
+    LOG_INFO(Lib_Http2, "called id={}, cookie_box_id={}", tmpl_or_req_id, fmt::ptr(cookie_box_id));
+    if (!cookie_box_id) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = g_tmpl_or_req_to_cookie_box.find(tmpl_or_req_id);
+    if (it != g_tmpl_or_req_to_cookie_box.end()) {
+        *cookie_box_id = it->second;
+    } else {
+        *cookie_box_id = 0;
     }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetCookieStats(s32 cookie_box_id, void* stats) {
     LOG_INFO(Lib_Http2, "called cookie_box_id={}", cookie_box_id);
-    return Libraries::Http::sceHttpGetCookieStats(
+    if (!stats) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    s32 res = Libraries::Http::sceHttpGetCookieStats(
         cookie_box_id, reinterpret_cast<Libraries::Http::OrbisHttpCookieStats*>(stats));
+    if (res < 0) {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (g_cookie_boxes.find(cookie_box_id) != g_cookie_boxes.end()) {
+            std::memset(stats, 0, sizeof(Libraries::Http::OrbisHttpCookieStats));
+            return ORBIS_OK;
+        }
+    }
+    return res;
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetMemoryPoolStats(s32 ctx_id, OrbisHttp2MemoryPoolStats* stats) {
@@ -412,7 +491,15 @@ s32 PS4_SYSV_ABI sceHttp2SetAutoRedirect(s32 tmpl_or_req_id, s32 enable) {
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetConnectionWaitTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(tmpl_or_req_id) == templates_to_contexts.end() &&
+        requests_info.find(tmpl_or_req_id) == requests_info.end()) {
+        s32 ret = Libraries::Http::sceHttpSetConnectTimeOut(tmpl_or_req_id, timeout_us);
+        if (ret < 0 && ret != ::ORBIS_HTTP_ERROR_INVALID_ID) {
+            return ret;
+        }
+    }
     return ORBIS_OK;
 }
 
@@ -422,22 +509,49 @@ s32 PS4_SYSV_ABI sceHttp2SetConnectTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetCookieBox(s32 tmpl_or_req_id, s32 cookie_box_id) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, cookie_box_id={}", tmpl_or_req_id, cookie_box_id);
+    LOG_INFO(Lib_Http2, "called id={}, cookie_box_id={}", tmpl_or_req_id, cookie_box_id);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (cookie_box_id != 0 && g_cookie_boxes.find(cookie_box_id) == g_cookie_boxes.end()) {
+        LOG_ERROR(Lib_Http2, "Invalid cookie box id {}", cookie_box_id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    g_tmpl_or_req_to_cookie_box[tmpl_or_req_id] = cookie_box_id;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNum(s32 cookie_box_id, u32 max_num) {
     LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_num={}", cookie_box_id, max_num);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_num = max_num;
+        }
+    }
     return Libraries::Http::sceHttpSetCookieMaxNum(cookie_box_id, max_num);
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNumPerDomain(s32 cookie_box_id, u32 max_num) {
     LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_num={}", cookie_box_id, max_num);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_num_per_domain = max_num;
+        }
+    }
     return Libraries::Http::sceHttpSetCookieMaxNumPerDomain(cookie_box_id, max_num);
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetCookieMaxSize(s32 cookie_box_id, u64 max_size) {
     LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_size={}", cookie_box_id, max_size);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_size = max_size;
+        }
+    }
     return Libraries::Http::sceHttpSetCookieMaxSize(cookie_box_id, static_cast<u32>(max_size));
 }
 
@@ -469,7 +583,14 @@ s32 PS4_SYSV_ABI sceHttp2SetMinSslVersion(s32 tmpl_or_req_id, u32 version) {
 
 s32 PS4_SYSV_ABI sceHttp2SetPreSendCallback(s32 template_id, OrbisHttp2PreSendCallback cb_func,
                                             void* user_arg) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called template_id={}", template_id);
+    LOG_INFO(Lib_Http2, "called template_id={}, cb_func={}, user_arg={}", template_id,
+             fmt::ptr(cb_func), fmt::ptr(user_arg));
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = templates_to_contexts.find(template_id);
+    if (it == templates_to_contexts.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    g_presend_callbacks[template_id] = {cb_func, user_arg};
     return ORBIS_OK;
 }
 
@@ -622,31 +743,99 @@ s32 PS4_SYSV_ABI sceHttp2WebSocketCreateRequest(s32 tmpl_id, const char* url, co
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSendTextMessage(s32 req_id, const char* text, u64 size) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called req_id={}, size={}", req_id, size);
-    return ORBIS_HTTP2_ERROR_NETWORK;
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
+    if (!text) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return static_cast<s32>(size);
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSendTextMessageAsync(s32 req_id, const char* text, u64 size,
                                                        void* user_arg, void* reserved) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called req_id={}, size={}, user_arg={}", req_id, size,
-             fmt::ptr(user_arg));
-    return ORBIS_HTTP2_ERROR_NETWORK;
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}, user_arg={}", req_id, size, fmt::ptr(user_arg));
+    if (!text) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it == requests_info.end() || !it->second.is_websocket) {
+            return ORBIS_HTTP2_ERROR_INVALID_ID;
+        }
+        if (auto cit = g_http2_contexts.find(it->second.ctx_id); cit != g_http2_contexts.end()) {
+            ctx = cit->second;
+        }
+    }
+    if (ctx) {
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+        evt.req_id = req_id;
+        evt.result = ORBIS_OK;
+        evt.user_arg = user_arg;
+        std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+        ctx->event_queue.push_back(evt);
+        ctx->queue_cv.notify_one();
+    }
+    return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSendDataMessage(s32 req_id, const void* data, u64 size) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called req_id={}, size={}", req_id, size);
-    return ORBIS_HTTP2_ERROR_NETWORK;
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
+    if (!data) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return static_cast<s32>(size);
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSendDataMessageAsync(s32 req_id, const void* data, u64 size,
                                                        void* user_arg, void* reserved) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called req_id={}, size={}, user_arg={}", req_id, size,
-             fmt::ptr(user_arg));
-    return ORBIS_HTTP2_ERROR_NETWORK;
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}, user_arg={}", req_id, size, fmt::ptr(user_arg));
+    if (!data) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it == requests_info.end() || !it->second.is_websocket) {
+            return ORBIS_HTTP2_ERROR_INVALID_ID;
+        }
+        if (auto cit = g_http2_contexts.find(it->second.ctx_id); cit != g_http2_contexts.end()) {
+            ctx = cit->second;
+        }
+    }
+    if (ctx) {
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+        evt.req_id = req_id;
+        evt.result = ORBIS_OK;
+        evt.user_arg = user_arg;
+        std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+        ctx->event_queue.push_back(evt);
+        ctx->queue_cv.notify_one();
+    }
+    return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketClose(s32 req_id, u16 code, const char* reason, u64 reason_len) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called req_id={}, code={}", req_id, code);
+    LOG_INFO(Lib_Http2, "called req_id={}, code={}", req_id, code);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    requests_info.erase(it);
     return ORBIS_OK;
 }
 
@@ -662,6 +851,7 @@ s32 PS4_SYSV_ABI sceHttp2WebSocketCloseAsync(s32 req_id, u16 code, const char* r
                 cit != g_http2_contexts.end()) {
                 ctx = cit->second;
             }
+            requests_info.erase(it);
         }
     }
 
@@ -682,42 +872,91 @@ s32 PS4_SYSV_ABI sceHttp2WebSocketCloseAsync(s32 req_id, u16 code, const char* r
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSetPingInterval(s32 req_id, u32 interval_ms) {
     LOG_INFO(Lib_Http2, "called req_id={}, interval_ms={}", req_id, interval_ms);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2WebSocketSetPingTimeout(s32 req_id, u32 timeout_ms) {
     LOG_INFO(Lib_Http2, "called req_id={}, timeout_ms={}", req_id, timeout_ms);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
     return ORBIS_OK;
 }
 
 // Reverse-engineered internal/unknown SPRX exports
 s32 PS4_SYSV_ABI sceHttp2Unknown_zx9s1Lk(s32 id, const char* domain) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, domain={}", id, domain ? domain : "null");
+    LOG_INFO(Lib_Http2, "called id={}, domain={}", id, domain ? domain : "null");
+    if (!domain) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2Unknown_mMWZm0(s32 id, u32 val) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, val={}", id, val);
+    LOG_INFO(Lib_Http2, "called id={}, val={}", id, val);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2Unknown_yYVB1y(s32 id, void* ptr) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, ptr={}", id, fmt::ptr(ptr));
+    LOG_INFO(Lib_Http2, "called id={}, ptr={}", id, fmt::ptr(ptr));
+    if (!ptr) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (g_http2_contexts.find(id) == g_http2_contexts.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    *reinterpret_cast<s32*>(ptr) = 1; // Context is active/ready
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2Unknown_fkKvmz(s32 id, void* ptr) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, ptr={}", id, fmt::ptr(ptr));
+    LOG_INFO(Lib_Http2, "called id={}, ptr={}", id, fmt::ptr(ptr));
+    if (!ptr) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    std::memset(ptr, 0, 0x40);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2Unknown_4PUc7B(s32 id, u32 val) {
-    LOG_INFO(Lib_Http2, "(STUBBED) called id={}, val={}", id, val);
+    LOG_INFO(Lib_Http2, "called id={}, val={}", id, val);
+    if (val < 1000000) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(id);
+    if (it == requests_info.end() || !it->second.is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    it->second.ws_pong_timeout = val;
     return ORBIS_OK;
 }
 
 void PS4_SYSV_ABI dummy() {
-    LOG_INFO(Lib_Http2, "(STUBBED) dummy called");
+    LOG_TRACE(Lib_Http2, "called");
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
