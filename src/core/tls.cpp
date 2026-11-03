@@ -32,6 +32,7 @@ namespace Core {
 
 // Windows
 
+static thread_local Tcb* t_tcb = nullptr;
 static DWORD slot = 0;
 static std::once_flag slot_alloc_flag;
 
@@ -45,11 +46,15 @@ u32 GetTcbKey() {
 }
 
 void SetTcbBase(void* image_address) {
+    t_tcb = reinterpret_cast<Tcb*>(image_address);
     const BOOL result = TlsSetValue(GetTcbKey(), image_address);
     ASSERT(result != 0);
 }
 
 Tcb* GetTcbBase() {
+    if (t_tcb) [[likely]] {
+        return t_tcb;
+    }
     return reinterpret_cast<Tcb*>(TlsGetValue(GetTcbKey()));
 }
 

@@ -38,8 +38,16 @@ struct FiberStack {
 // Stacks given to fibers, by the address of the guest context they run in place of.
 static std::mutex fiber_stacks_mutex;
 static std::map<VAddr, FiberStack> fiber_stacks;
+static std::vector<std::pair<u64, void*>> fiber_free_stacks;
 
 static void* AllocateStack(u64 size) {
+    for (auto it = fiber_free_stacks.begin(); it != fiber_free_stacks.end(); ++it) {
+        if (it->first == size) {
+            void* stack = it->second;
+            fiber_free_stacks.erase(it);
+            return stack;
+        }
+    }
     Kernel::PthreadAttr attr{.stacksize_attr = size};
     const int ret = Kernel::ThrState::Instance()->CreateStack(&attr);
     ASSERT_MSG(ret == 0, "Unable to allocate a fiber stack with size = 0x{:x}", size);
@@ -47,6 +55,10 @@ static void* AllocateStack(u64 size) {
 }
 
 static void FreeStack(void* stack, u64 size) {
+    if (fiber_free_stacks.size() < 128) {
+        fiber_free_stacks.emplace_back(size, stack);
+        return;
+    }
     auto* thread_state = Kernel::ThrState::Instance();
     Kernel::PthreadAttr attr{.stackaddr_attr = stack, .stacksize_attr = size};
     std::scoped_lock lk{thread_state->thread_list_lock};
@@ -190,6 +202,13 @@ void PS4_SYSV_ABI _sceFiberSwitch(OrbisFiber* cur_fiber, OrbisFiber* fiber, u64 
                                   OrbisFiberContext* ctx) {
     ctx->prev_fiber = cur_fiber;
     ctx->current_fiber = fiber;
+
+    OrbisFiberContext* fiber_ctx = fiber->context;
+    if (fiber_ctx) [[likely]] {
+        ctx->arg_on_run_to = arg_on_run_to;
+        _sceFiberLongJmp(fiber_ctx);
+        __builtin_trap();
+    }
 
     if (fiber->addr_context == nullptr) {
         ctx->prev_fiber = nullptr;
@@ -418,24 +437,25 @@ s32 PS4_SYSV_ABI sceFiberRunImpl(OrbisFiber* fiber, void* addr_context, u64 size
 
 s32 PS4_SYSV_ABI sceFiberSwitchImpl(OrbisFiber* fiber, void* addr_context, u64 size_context,
                                     u64 arg_on_run_to, u64* arg_on_run) {
-    if (!fiber) {
+    if (!fiber) [[unlikely]] {
         return ORBIS_FIBER_ERROR_NULL;
     }
-    if ((u64)fiber & 7 || (u64)addr_context & 15) {
+    if (((u64)fiber & 7) || ((u64)addr_context & 15)) [[unlikely]] {
         return ORBIS_FIBER_ERROR_ALIGNMENT;
     }
-    if (fiber->magic_start != kFiberSignature0 || fiber->magic_end != kFiberSignature1) {
+    if (fiber->magic_start != kFiberSignature0 || fiber->magic_end != kFiberSignature1)
+        [[unlikely]] {
         return ORBIS_FIBER_ERROR_INVALID;
     }
 
     OrbisFiberContext* g_ctx = GetFiberContext();
-    if (!g_ctx) {
+    if (!g_ctx) [[unlikely]] {
         return ORBIS_FIBER_ERROR_PERMISSION;
     }
 
     /* Caller wants to attach context and switch. */
     const bool attach_context = addr_context != nullptr || size_context != 0;
-    if (attach_context) {
+    if (attach_context) [[unlikely]] {
         s32 res = _sceFiberValidateAttachContext(fiber, addr_context, size_context);
         if (res < 0) {
             return res;
@@ -443,11 +463,11 @@ s32 PS4_SYSV_ABI sceFiberSwitchImpl(OrbisFiber* fiber, void* addr_context, u64 s
     }
 
     FiberState expected = FiberState::Idle;
-    if (!fiber->state.compare_exchange_strong(expected, FiberState::Run)) {
+    if (!fiber->state.compare_exchange_strong(expected, FiberState::Run)) [[unlikely]] {
         return ORBIS_FIBER_ERROR_STATE;
     }
 
-    if (attach_context) {
+    if (attach_context) [[unlikely]] {
         _sceFiberAttachContext(fiber, addr_context, size_context);
     }
 
@@ -461,12 +481,13 @@ s32 PS4_SYSV_ABI sceFiberSwitchImpl(OrbisFiber* fiber, void* addr_context, u64 s
     s32 jmp = _sceFiberSetJmp(&ctx);
     if (!jmp) {
         cur_fiber->context = &ctx;
-        _sceFiberCheckStackOverflow(g_ctx);
+        if (context_size_check || (fiber->flags & FiberFlags::ContextSizeCheck)) [[unlikely]] {
+            _sceFiberCheckStackOverflow(g_ctx);
+        }
         _sceFiberSwitch(cur_fiber, fiber, arg_on_run_to, g_ctx);
         __builtin_trap();
     }
 
-    g_ctx = GetFiberContext();
     if (g_ctx->prev_fiber) {
         g_ctx->prev_fiber->state = FiberState::Idle;
         g_ctx->prev_fiber = nullptr;
@@ -495,7 +516,7 @@ s32 PS4_SYSV_ABI sceFiberGetSelf(OrbisFiber** fiber) {
 
 s32 PS4_SYSV_ABI sceFiberReturnToThread(u64 arg_on_return, u64* arg_on_run) {
     OrbisFiberContext* g_ctx = GetFiberContext();
-    if (!g_ctx) {
+    if (!g_ctx) [[unlikely]] {
         return ORBIS_FIBER_ERROR_PERMISSION;
     }
 
@@ -504,7 +525,6 @@ s32 PS4_SYSV_ABI sceFiberReturnToThread(u64 arg_on_return, u64* arg_on_run) {
         OrbisFiberContext ctx{};
         s32 jmp = _sceFiberSetJmp(&ctx);
         if (jmp) {
-            g_ctx = GetFiberContext();
             if (g_ctx->prev_fiber) {
                 g_ctx->prev_fiber->state = FiberState::Idle;
                 g_ctx->prev_fiber = nullptr;
@@ -516,7 +536,9 @@ s32 PS4_SYSV_ABI sceFiberReturnToThread(u64 arg_on_return, u64* arg_on_run) {
         }
 
         cur_fiber->context = &ctx;
-        _sceFiberCheckStackOverflow(g_ctx);
+        if (context_size_check || (cur_fiber->flags & FiberFlags::ContextSizeCheck)) [[unlikely]] {
+            _sceFiberCheckStackOverflow(g_ctx);
+        }
     }
 
     _sceFiberTerminate(cur_fiber, arg_on_return, g_ctx);
