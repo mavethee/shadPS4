@@ -854,34 +854,57 @@ void NotifyNpStateFromUserServiceEvent(Libraries::UserService::OrbisUserServiceE
     }
 }
 
+static void QueueInitialStateForLoggedInUsers() {
+    auto logged_in_users = UserManagement.GetLoggedInUsers();
+    for (const auto& user : logged_in_users) {
+        if (user) {
+            OrbisNpState state = OrbisNpState::SignedOut;
+            if (g_shadnet_enabled &&
+                Libraries::Np::NpHandler::GetInstance().IsPsnSignedIn(user->user_id)) {
+                state = OrbisNpState::SignedIn;
+            }
+            QueueNpStateEvent(user->user_id, state);
+        }
+    }
+}
+
 static s32 RegisterStateCallbackA(OrbisNpStateCallbackA callback, void* userdata) {
     if (callback == nullptr) {
         return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
 
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
+    s32 result_id = -1;
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
 
-    for (const auto& entry : g_np_state_callbacks) {
-        if (!entry.in_use) {
-            continue;
+        for (const auto& entry : g_np_state_callbacks) {
+            if (!entry.in_use) {
+                continue;
+            }
+            if (entry.func == callback) {
+                return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+            }
         }
-        if (entry.func == callback) {
-            return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+
+        for (size_t i = 0; i < g_np_state_callbacks.size(); ++i) {
+            auto& entry = g_np_state_callbacks[i];
+            if (entry.in_use) {
+                continue;
+            }
+            entry.func = callback;
+            entry.userdata = userdata;
+            entry.in_use = true;
+            result_id = static_cast<s32>(i + 1);
+            break;
         }
     }
 
-    for (size_t i = 0; i < g_np_state_callbacks.size(); ++i) {
-        auto& entry = g_np_state_callbacks[i];
-        if (entry.in_use) {
-            continue;
-        }
-        entry.func = callback;
-        entry.userdata = userdata;
-        entry.in_use = true;
-        return static_cast<s32>(i + 1);
+    if (result_id < 0) {
+        return ORBIS_NP_ERROR_CALLBACK_MAX;
     }
 
-    return ORBIS_NP_ERROR_CALLBACK_MAX;
+    QueueInitialStateForLoggedInUsers();
+    return result_id;
 }
 
 static s32 UnregisterStateCallbackAById(s32 callback_id) {
@@ -983,14 +1006,18 @@ s32 PS4_SYSV_ABI sceNpRegisterStateCallback(OrbisNpStateCallback callback, void*
         return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
 
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
-    if (LegacyNpStateCb.func != nullptr) {
-        return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
+        if (LegacyNpStateCb.func != nullptr) {
+            return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+        }
+
+        LOG_INFO(Lib_NpManager, "called, userdata = {}", userdata);
+        LegacyNpStateCb.func = callback;
+        LegacyNpStateCb.userdata = userdata;
     }
 
-    LOG_INFO(Lib_NpManager, "called, userdata = {}", userdata);
-    LegacyNpStateCb.func = callback;
-    LegacyNpStateCb.userdata = userdata;
+    QueueInitialStateForLoggedInUsers();
     return ORBIS_OK;
 }
 
@@ -1021,16 +1048,20 @@ s32 PS4_SYSV_ABI sceNpRegisterNpReachabilityStateCallback(OrbisNpReachabilitySta
         return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
 
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
-    if (NpReachabilityCb.func != nullptr) {
-        LOG_ERROR(Lib_NpManager, "callback already registered, cannot register multiple");
-        return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
+        if (NpReachabilityCb.func != nullptr) {
+            LOG_ERROR(Lib_NpManager, "callback already registered, cannot register multiple");
+            return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+        }
+        LOG_INFO(Lib_NpManager, "called");
+        NpReachabilityCb.func = callback;
+        NpReachabilityCb.userdata = userdata;
+        // Reset the per-user cache so the next state transition reports fresh.
+        g_np_reachability_last.clear();
     }
-    LOG_INFO(Lib_NpManager, "called");
-    NpReachabilityCb.func = callback;
-    NpReachabilityCb.userdata = userdata;
-    // Reset the per-user cache so the next state transition reports fresh.
-    g_np_reachability_last.clear();
+
+    QueueInitialStateForLoggedInUsers();
     return ORBIS_OK;
 }
 
@@ -1048,10 +1079,19 @@ s32 PS4_SYSV_ABI sceNpUnregisterNpReachabilityStateCallback() {
 
 s32 PS4_SYSV_ABI sceNpRegisterStateCallbackForToolkit(OrbisNpStateCallbackForNpToolkit callback,
                                                       void* userdata) {
-    LOG_ERROR(Lib_NpManager, "(STUBBED) called");
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
-    NpStateCbForNp.func = callback;
-    NpStateCbForNp.userdata = userdata;
+    if (callback == nullptr) {
+        return ORBIS_NP_ERROR_INVALID_ARGUMENT;
+    }
+
+    LOG_INFO(Lib_NpManager, "called, callback = {:p}, userdata = {}",
+             reinterpret_cast<const void*>(callback), userdata);
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
+        NpStateCbForNp.func = callback;
+        NpStateCbForNp.userdata = userdata;
+    }
+
+    QueueInitialStateForLoggedInUsers();
     return ORBIS_OK;
 }
 
