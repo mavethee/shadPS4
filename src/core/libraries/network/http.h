@@ -328,5 +328,7 @@ int PS4_SYSV_ABI sceHttpUriParse(OrbisHttpUriElement* out, const char* srcUri, v
 int PS4_SYSV_ABI sceHttpUriSweepPath(char* dst, const char* src, u64 srcSize);
 int PS4_SYSV_ABI sceHttpUriUnescape(char* out, u64* require, u64 prepare, const char* in);
 
+u64 GetRequestContentLength(int reqId);
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Http

@@ -377,14 +377,30 @@ bool ApplyHostOverride(std::string& scheme, std::string& host, u16& port, bool& 
     //   "host"                - matches host on any scheme/port
     //   "*"                   - catch-all fallback
     const std::string full_key = scheme + "://" + host + ":" + std::to_string(port);
+    const std::string scheme_host_key = scheme + "://" + host;
     const std::string host_port_key = host + ":" + std::to_string(port);
 
     auto it = state.entries.find(full_key);
+    if (it == state.entries.end()) {
+        it = state.entries.find(scheme_host_key);
+    }
     if (it == state.entries.end()) {
         it = state.entries.find(host_port_key);
     }
     if (it == state.entries.end()) {
         it = state.entries.find(host);
+    }
+    if (it == state.entries.end()) {
+        std::string lower_host = host;
+        std::transform(lower_host.begin(), lower_host.end(), lower_host.begin(),
+                       [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+        it = state.entries.find(scheme + "://" + lower_host);
+        if (it == state.entries.end()) {
+            it = state.entries.find(lower_host + ":" + std::to_string(port));
+        }
+        if (it == state.entries.end()) {
+            it = state.entries.find(lower_host);
+        }
     }
     if (it == state.entries.end()) {
         it = state.entries.find("*");
@@ -1713,6 +1729,7 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
         // Created to Sending. Worker thread will move to Sent.
         req.state = HttpRequestState::Sending;
         req_ptr = it->second;
+
         LogSendRequestSettings(req, reqId, size);
 
         plan.method = req.method;
@@ -2928,6 +2945,14 @@ int PS4_SYSV_ABI sceHttpSetRequestContentLength(int id, u64 contentLength) {
     }
     it->second->content_length = contentLength;
     return ORBIS_OK;
+}
+
+u64 GetRequestContentLength(int reqId) {
+    std::lock_guard<std::mutex> lock(g_state.m_mutex);
+    if (auto it = g_state.requests.find(reqId); it != g_state.requests.end()) {
+        return it->second->content_length;
+    }
+    return 0;
 }
 
 //***********************************

@@ -1,75 +1,187 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/logging/log.h"
+#include "core/emulator_settings.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/network/http.h"
-#include "core/libraries/network/http2.h"
 #include "core/libraries/network/http_error.h"
+#include "core/libraries/network/http2.h"
+#include "core/libraries/network/http2_error.h"
+#include "core/libraries/kernel/equeue.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <thread>
+#include <cstring>
+#include <fmt/format.h>
 
 namespace Libraries::Http2 {
 
+struct Http2RequestInfo {
+    s32 ctx_id{-1};
+    s32 tmpl_id{-1};
+    s32 conn_id{-1};
+    s32 req_id{-1};
+    bool is_websocket{false};
+    bool is_async{false};
+    u32 ws_pong_timeout{10000000};
+    void* user_arg{nullptr};
+
+    std::mutex event_mutex;
+    std::condition_variable event_cv;
+    std::deque<OrbisHttp2AsyncEvent> event_queue;
+
+    bool has_user_event{false};
+    OrbisHttp2UserEvent user_event{};
+
+    // Two-stage send and streaming state (matching Ghidra libSceHttp2 FUN_00004ef0):
+    u64 content_length{0};
+    u64 sent_length{0};
+    u32 phase{0}; // 0 = initial / headers, 1 = streaming data, 2 = all data sent
+    std::vector<u8> body_buffer{};
+};
+
+struct Http2CookieBox {
+    s32 id{0};
+    u64 pool_size{0};
+    u32 max_num{300};
+    u32 max_num_per_domain{30};
+    u64 max_size{4096};
+};
+
+struct Http2PreSendCallbackEntry {
+    OrbisHttp2PreSendCallback cb{nullptr};
+    void* user_arg{nullptr};
+};
+
+struct Http2Context {
+    explicit Http2Context(s32 id) : ctx_id(id) {}
+    s32 ctx_id;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::deque<OrbisHttp2AsyncEvent> event_queue;
+};
+
 std::mutex g_http2_mutex;
+std::map<s32, s32> templates_to_contexts{};
 std::map<s32, s32> requests_to_connections{};
+std::map<s32, std::shared_ptr<Http2RequestInfo>> requests_info{};
+std::map<s32, std::shared_ptr<Http2Context>> g_http2_contexts{};
+std::map<s32, Http2CookieBox> g_cookie_boxes{};
+std::map<s32, s32> g_tmpl_or_req_to_cookie_box{};
+std::map<s32, Http2PreSendCallbackEntry> g_presend_callbacks{};
+static std::atomic<s32> g_next_cookie_box_id{0x20000001};
+static std::atomic<s32> g_next_ws_req_id{0x6000};
 
 s32 PS4_SYSV_ABI sceHttp2AbortRequest(s32 req_id) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
     s32 result = Libraries::Http::sceHttpAbortRequest(req_id);
     if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to get abort HTTP request, error = {:#x}", result);
+        LOG_ERROR(Lib_Http2, "Failed to abort HTTP request, error = {:#x}", result);
     }
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2AddCookie() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2AddCookie(s32 tmpl_or_req_id, const char* url, const char* cookie,
+                                   u64 cookie_len) {
+    LOG_INFO(Lib_Http2, "called id={}, url={}, cookie_len={}", tmpl_or_req_id, url ? url : "null",
+             cookie_len);
+    if (!url || !cookie) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    const u64 len = cookie_len ? cookie_len : std::strlen(cookie);
+    s32 result = Libraries::Http::sceHttpAddCookie(tmpl_or_req_id, url, cookie, len);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to add cookie, error = {:#x}", result);
+    }
+    return result;
 }
 
 s32 PS4_SYSV_ABI sceHttp2AddRequestHeader(s32 template_or_req_id, const char* name,
                                           const char* value, u32 mode) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called id={}, name={}, value={}, mode={}", template_or_req_id,
+             name ? name : "null", value ? value : "null", mode);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto it = requests_info.find(template_or_req_id); it != requests_info.end()) {
+            if (it->second->is_websocket) {
+                LOG_INFO(Lib_Http2, "WebSocket header added: id={}, {}={}", template_or_req_id,
+                         name ? name : "null", value ? value : "null");
+                return ORBIS_OK;
+            }
+        }
+    }
     s32 result = Libraries::Http::sceHttpAddRequestHeader(template_or_req_id, name, value, mode);
     if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to add HTTP response header, error = {:#x}", result);
+        LOG_ERROR(Lib_Http2, "Failed to add HTTP request header, error = {:#x}", result);
     }
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2AuthCacheFlush() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2AuthCacheFlush(s32 tmpl_or_req_id) {
+    LOG_INFO(Lib_Http2, "called id={}", tmpl_or_req_id);
+    s32 result = Libraries::Http::sceHttpAuthCacheFlush(tmpl_or_req_id);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to flush auth cache, error = {:#x}", result);
+    }
+    return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2CookieExport() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2CookieExport(s32 cookie_box_id, void* buf, u64 buf_len, u64* out_len) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, buf_len={}", cookie_box_id, buf_len);
+    if (!buf && buf_len > 0) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    s32 result = Libraries::Http::sceHttpCookieExport(cookie_box_id, buf, buf_len, out_len);
+    if (result < 0) {
+        LOG_ERROR(Lib_Http2, "Failed to export cookies, error = {:#x}", result);
+    }
+    return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2CookieFlush() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2CookieFlush(s32 cookie_box_id) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}", cookie_box_id);
+    return Libraries::Http::sceHttpCookieFlush(cookie_box_id);
 }
 
-s32 PS4_SYSV_ABI sceHttp2CookieImport() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2CookieImport(s32 cookie_box_id, const void* buf, u64 buf_len) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, buf_len={}", cookie_box_id, buf_len);
+    return Libraries::Http::sceHttpCookieImport(cookie_box_id, buf, buf_len);
 }
 
-s32 PS4_SYSV_ABI sceHttp2CreateCookieBox() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2CreateCookieBox(u64 pool_size) {
+    LOG_INFO(Lib_Http2, "called pool_size={:#x}", pool_size);
+    if (pool_size < 0x10000) {
+        LOG_ERROR(Lib_Http2, "Invalid pool size {:#x}, minimum required is 0x10000", pool_size);
+        return ORBIS_HTTP2_ERROR_INVALID_POOL_SIZE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    s32 id = g_next_cookie_box_id.fetch_add(1);
+    Http2CookieBox box{};
+    box.id = id;
+    box.pool_size = pool_size;
+    g_cookie_boxes[id] = std::move(box);
+    return id;
 }
 
 s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32 tmpl_id, const char* method, const char* url,
                                               u64 content_length) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called tmpl_id={}, method={}, url={}, content_length={}", tmpl_id,
+             method ? method : "null", url ? url : "null", content_length);
     std::lock_guard<std::mutex> lock(g_http2_mutex);
-    // Http1 has a connection thing to go through first
+
+    s32 ctx_id = -1;
+    if (auto it = templates_to_contexts.find(tmpl_id); it != templates_to_contexts.end()) {
+        ctx_id = it->second;
+    }
+
     s32 conn_id = Libraries::Http::sceHttpCreateConnectionWithURL(tmpl_id, url, true);
     if (conn_id < 0) {
         LOG_ERROR(Lib_Http2, "Failed to create HTTP connection, error = {:#x}", conn_id);
@@ -86,29 +198,68 @@ s32 PS4_SYSV_ABI sceHttp2CreateRequestWithURL(s32 tmpl_id, const char* method, c
         }
         return req_id;
     }
+
+    auto info = std::make_shared<Http2RequestInfo>();
+    info->ctx_id = ctx_id;
+    info->tmpl_id = tmpl_id;
+    info->conn_id = conn_id;
+    info->req_id = req_id;
+    info->is_websocket = false;
+    info->content_length = content_length;
+    requests_info[req_id] = info;
     requests_to_connections[req_id] = conn_id;
+
     return req_id;
 }
 
 s32 PS4_SYSV_ABI sceHttp2CreateTemplate(s32 ctx_id, const char* user_agent, s32 http_ver,
                                         s32 auto_proxy_conf) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called ctx_id={}, user_agent={}, http_ver={}, auto_proxy={}", ctx_id,
+             user_agent ? user_agent : "null", http_ver, auto_proxy_conf);
     s32 tmpl_id =
         Libraries::Http::sceHttpCreateTemplate(ctx_id, user_agent, http_ver, auto_proxy_conf);
     if (tmpl_id < 0) {
         LOG_ERROR(Lib_Http2, "Failed to create HTTP template, error = {:#x}", tmpl_id);
+        return tmpl_id;
     }
+
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    templates_to_contexts[tmpl_id] = ctx_id;
     return tmpl_id;
 }
 
-s32 PS4_SYSV_ABI sceHttp2DeleteCookieBox() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHttp2DeleteCookieBox(s32 cookie_box_id) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}", cookie_box_id);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = g_cookie_boxes.find(cookie_box_id);
+    if (it == g_cookie_boxes.end()) {
+        LOG_ERROR(Lib_Http2, "Cookie box {} not found", cookie_box_id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    g_cookie_boxes.erase(it);
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32 req_id) {
-    LOG_INFO(Lib_Http2, "called");
-    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
+    std::shared_ptr<Http2RequestInfo> req_info;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto it = requests_info.find(req_id); it != requests_info.end()) {
+            req_info = it->second;
+            requests_info.erase(it);
+        }
+        g_tmpl_or_req_to_cookie_box.erase(req_id);
+    }
+    if (req_info) {
+        std::lock_guard<std::mutex> lk(req_info->event_mutex);
+        req_info->event_cv.notify_all();
+    }
+    if (req_info && req_info->is_websocket) {
+        LOG_INFO(Lib_Http2, "Deleted WebSocket request {}", req_id);
+        return ORBIS_OK;
+    }
+
     const s32 result = Libraries::Http::sceHttpDeleteRequest(req_id);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to delete HTTP request, error = {:#x}", result);
@@ -124,7 +275,6 @@ s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32 req_id) {
 
     const s32 conn_result = Libraries::Http::sceHttpDeleteConnection(conn_id);
     if (conn_result < 0) {
-
         LOG_ERROR(Lib_Http2, "Failed to delete HTTP connection, error = {:#x}", conn_result);
         return conn_result;
     }
@@ -132,7 +282,13 @@ s32 PS4_SYSV_ABI sceHttp2DeleteRequest(s32 req_id) {
 }
 
 s32 PS4_SYSV_ABI sceHttp2DeleteTemplate(s32 tmpl_id) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called tmpl_id={}", tmpl_id);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        templates_to_contexts.erase(tmpl_id);
+        g_tmpl_or_req_to_cookie_box.erase(tmpl_id);
+        g_presend_callbacks.erase(tmpl_id);
+    }
     s32 result = Libraries::Http::sceHttpDeleteTemplate(tmpl_id);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to delete HTTP template, error = {:#x}", result);
@@ -141,7 +297,7 @@ s32 PS4_SYSV_ABI sceHttp2DeleteTemplate(s32 tmpl_id) {
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetAllResponseHeaders(s32 req_id, char** header, u64* header_size) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
     s32 result = Libraries::Http::sceHttpGetAllResponseHeaders(req_id, header, header_size);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to get HTTP response headers, error = {:#x}", result);
@@ -149,38 +305,73 @@ s32 PS4_SYSV_ABI sceHttp2GetAllResponseHeaders(s32 req_id, char** header, u64* h
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2GetAuthEnabled() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHttp2GetAllTrailingHeaders(s32 req_id, char** header, u64* header_size) {
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
+    if (header) {
+        *header = nullptr;
+    }
+    if (header_size) {
+        *header_size = 0;
+    }
+    return ORBIS_HTTP2_ERROR_NOT_FOUND;
+}
+
+s32 PS4_SYSV_ABI sceHttp2GetAuthEnabled(s32 tmpl_or_req_id, s32* enable) {
+    LOG_INFO(Lib_Http2, "called id={}", tmpl_or_req_id);
+    return Libraries::Http::sceHttpGetAuthEnabled(tmpl_or_req_id, enable);
+}
+
+s32 PS4_SYSV_ABI sceHttp2GetAutoRedirect(s32 tmpl_or_req_id, s32* enable) {
+    LOG_INFO(Lib_Http2, "called id={}", tmpl_or_req_id);
+    return Libraries::Http::sceHttpGetAutoRedirect(tmpl_or_req_id, enable);
+}
+
+s32 PS4_SYSV_ABI sceHttp2GetCookie(s32 tmpl_or_req_id, const char* url, char* cookie,
+                                   u64* cookie_len, u64 prepared) {
+    LOG_INFO(Lib_Http2, "called id={}, url={}", tmpl_or_req_id, url ? url : "null");
+    return Libraries::Http::sceHttpGetCookie(tmpl_or_req_id, url, cookie, cookie_len, prepared, 0);
+}
+
+s32 PS4_SYSV_ABI sceHttp2GetCookieBox(s32 tmpl_or_req_id, s32* cookie_box_id) {
+    LOG_INFO(Lib_Http2, "called id={}, cookie_box_id={}", tmpl_or_req_id, fmt::ptr(cookie_box_id));
+    if (!cookie_box_id) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = g_tmpl_or_req_to_cookie_box.find(tmpl_or_req_id);
+    if (it != g_tmpl_or_req_to_cookie_box.end()) {
+        *cookie_box_id = it->second;
+    } else {
+        *cookie_box_id = 0;
+    }
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHttp2GetAutoRedirect() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2GetCookieStats(s32 cookie_box_id, void* stats) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}", cookie_box_id);
+    if (!stats) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    s32 res = Libraries::Http::sceHttpGetCookieStats(
+        cookie_box_id, reinterpret_cast<Libraries::Http::OrbisHttpCookieStats*>(stats));
+    if (res < 0) {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (g_cookie_boxes.find(cookie_box_id) != g_cookie_boxes.end()) {
+            std::memset(stats, 0, sizeof(Libraries::Http::OrbisHttpCookieStats));
+            return ORBIS_OK;
+        }
+    }
+    return res;
 }
 
-s32 PS4_SYSV_ABI sceHttp2GetCookie() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2GetCookieBox() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2GetCookieStats() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2GetMemoryPoolStats() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2GetMemoryPoolStats(s32 ctx_id, OrbisHttp2MemoryPoolStats* stats) {
+    LOG_INFO(Lib_Http2, "called ctx_id={}", ctx_id);
+    return Libraries::Http::sceHttpGetMemoryPoolStats(
+        ctx_id, reinterpret_cast<Libraries::Http::OrbisHttpMemoryPoolStats*>(stats));
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetResponseContentLength(s32 req_id, s32* result, u64* content_length) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
     s32 res = Libraries::Http::sceHttpGetResponseContentLength(
         req_id, reinterpret_cast<int*>(result), content_length);
     if (res < 0) {
@@ -190,7 +381,7 @@ s32 PS4_SYSV_ABI sceHttp2GetResponseContentLength(s32 req_id, s32* result, u64* 
 }
 
 s32 PS4_SYSV_ABI sceHttp2GetStatusCode(s32 req_id, s32* status_code) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
     s32 result = Libraries::Http::sceHttpGetStatusCode(req_id, status_code);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to get HTTP status code, error = {:#x}", result);
@@ -199,16 +390,20 @@ s32 PS4_SYSV_ABI sceHttp2GetStatusCode(s32 req_id, s32* status_code) {
 }
 
 s32 PS4_SYSV_ABI sceHttp2Init(s32 net_id, s32 ssl_id, u64 pool_size, s32 max_requests) {
-    LOG_ERROR(Lib_Http2, "(DUMMY) called");
+    LOG_INFO(Lib_Http2, "called net_id={}, ssl_id={}, pool_size={}, max_requests={}", net_id,
+             ssl_id, pool_size, max_requests);
     s32 ctx_id = Libraries::Http::sceHttpInit(net_id, ssl_id, pool_size);
     if (ctx_id < 0) {
         LOG_ERROR(Lib_Http2, "Failed to init HTTP context, error = {:#x}", ctx_id);
+        return ctx_id;
     }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    g_http2_contexts[ctx_id] = std::make_shared<Http2Context>(ctx_id);
     return ctx_id;
 }
 
 s32 PS4_SYSV_ABI sceHttp2ReadData(s32 req_id, void* data, u64 size) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
     s32 result = Libraries::Http::sceHttpReadData(req_id, data, size);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to read HTTP data, error = {:#x}", result);
@@ -216,141 +411,562 @@ s32 PS4_SYSV_ABI sceHttp2ReadData(s32 req_id, void* data, u64 size) {
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2ReadDataAsync() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHttp2ReadDataAsync(s32 req_id, void* data, u64 size, void* user_arg,
+                                       void* reserved) {
+    LOG_INFO(Lib_Http2, "called req_id={}, data={}, size={}, user_arg={}", req_id, fmt::ptr(data),
+             size, fmt::ptr(user_arg));
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it != requests_info.end()) {
+            req_info = it->second;
+            req_info->is_async = true;
+            if (user_arg) {
+                req_info->has_user_event = true;
+                std::memcpy(&req_info->user_event, user_arg, sizeof(OrbisHttp2UserEvent));
+            } else {
+                req_info->has_user_event = false;
+                std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+            }
+            if (auto cit = g_http2_contexts.find(req_info->ctx_id);
+                cit != g_http2_contexts.end()) {
+                ctx = cit->second;
+            }
+        }
+    }
+
+    if (!req_info) {
+        LOG_ERROR(Lib_Http2, "No request info found for request {}", req_id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+
+    std::thread([req_info, ctx, req_id, data, size, user_arg]() {
+        s32 read_bytes = Libraries::Http::sceHttpReadData(req_id, data, size);
+
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_READ_COMPLETE;
+        evt.req_id = req_id;
+        evt.result = read_bytes;
+        evt.reserved = 0;
+        evt.user_arg = user_arg;
+
+        {
+            std::lock_guard<std::mutex> lk(req_info->event_mutex);
+            req_info->event_queue.push_back(evt);
+            req_info->event_cv.notify_one();
+        }
+
+        if (ctx) {
+            std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+            ctx->event_queue.push_back(evt);
+            ctx->queue_cv.notify_one();
+        }
+
+        if (req_info->has_user_event && req_info->user_event.equeue != 0) {
+            LOG_INFO(Lib_Http2,
+                     "Triggering user event for read req_id={}, equeue={}, id={}, udata={}",
+                     req_id, req_info->user_event.equeue, req_info->user_event.id,
+                     fmt::ptr(req_info->user_event.udata));
+            s32 trig_res = Libraries::Kernel::sceKernelTriggerUserEvent(
+                req_info->user_event.equeue, req_info->user_event.id,
+                req_info->user_event.udata);
+            if (trig_res < 0) {
+                LOG_WARNING(Lib_Http2, "sceKernelTriggerUserEvent failed: {:#x}", trig_res);
+            }
+            req_info->has_user_event = false;
+            std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+        }
+    }).detach();
+
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHttp2RedirectCacheFlush() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2RedirectCacheFlush(s32 tmpl_or_req_id) {
+    LOG_INFO(Lib_Http2, "called id={}", tmpl_or_req_id);
+    return Libraries::Http::sceHttpRedirectCacheFlush(tmpl_or_req_id);
 }
 
-s32 PS4_SYSV_ABI sceHttp2RemoveRequestHeader(s32 template_or_req_id, const char* name) {
-    LOG_INFO(Lib_Http2, "called id={}, name={}", template_or_req_id, name ? name : "(null)");
-    s32 result = Libraries::Http::sceHttpRemoveRequestHeader(template_or_req_id, name);
-    if (result == ORBIS_HTTP_ERROR_NOT_FOUND) {
-        result = ORBIS_OK;
-    }
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to remove HTTP request header, error = {:#x}", result);
-    }
-    return result;
+s32 PS4_SYSV_ABI sceHttp2RemoveRequestHeader(s32 tmpl_or_req_id, const char* name) {
+    LOG_INFO(Lib_Http2, "called id={}, name={}", tmpl_or_req_id, name ? name : "null");
+    return Libraries::Http::sceHttpRemoveRequestHeader(tmpl_or_req_id, name);
 }
 
 s32 PS4_SYSV_ABI sceHttp2SendRequest(s32 req_id, const void* data, u64 size) {
-    LOG_INFO(Lib_Http2, "called");
-    s32 result = Libraries::Http::sceHttpSendRequest(req_id, data, size);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to send HTTP request, error = {:#x}", result);
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::vector<u8> dispatch_body;
+    bool should_dispatch = false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto it = requests_info.find(req_id); it != requests_info.end()) {
+            req_info = it->second;
+            if (req_info->is_websocket) {
+                LOG_INFO(Lib_Http2, "WebSocket synchronous connect/send succeeded for req_id={}", req_id);
+                return ORBIS_OK;
+            }
+
+            u64 clen = req_info->content_length;
+            if (clen == 0) {
+                clen = Libraries::Http::GetRequestContentLength(req_id);
+                req_info->content_length = clen;
+            }
+
+            if (req_info->phase == 2 || (req_info->phase == 1 && clen > 0 && req_info->sent_length >= clen)) {
+                LOG_ERROR(Lib_Http2, "Request {} already sent (sent_length={}, content_length={})",
+                          req_id, req_info->sent_length, clen);
+                return ORBIS_HTTP2_ERROR_AFTER_SEND;
+            }
+
+            if (clen > 0 && req_info->sent_length + size > clen) {
+                LOG_ERROR(Lib_Http2,
+                          "Request {} data exceeds content_length (sent_length={}, size={}, content_length={})",
+                          req_id, req_info->sent_length, size, clen);
+                return ORBIS_HTTP2_ERROR_OUT_OF_SIZE;
+            }
+
+            if (req_info->phase == 0) {
+                if (clen > 0 && size < clen) {
+                    req_info->phase = 1;
+                    if (data && size > 0) {
+                        const u8* ptr = static_cast<const u8*>(data);
+                        req_info->body_buffer.assign(ptr, ptr + size);
+                        req_info->sent_length += size;
+                    }
+                    return ORBIS_OK;
+                } else {
+                    req_info->phase = 2;
+                    req_info->sent_length = size;
+                    should_dispatch = true;
+                    if (data && size > 0) {
+                        const u8* ptr = static_cast<const u8*>(data);
+                        dispatch_body.assign(ptr, ptr + size);
+                    }
+                }
+            } else if (req_info->phase == 1) {
+                if (data && size > 0) {
+                    const u8* ptr = static_cast<const u8*>(data);
+                    req_info->body_buffer.insert(req_info->body_buffer.end(), ptr, ptr + size);
+                    req_info->sent_length += size;
+                }
+                if (req_info->sent_length >= clen) {
+                    req_info->phase = 2;
+                    should_dispatch = true;
+                    dispatch_body = req_info->body_buffer;
+                } else {
+                    return ORBIS_OK;
+                }
+            }
+        } else {
+            should_dispatch = true;
+            if (data && size > 0) {
+                const u8* ptr = static_cast<const u8*>(data);
+                dispatch_body.assign(ptr, ptr + size);
+            }
+        }
     }
-    return result;
-}
 
-s32 PS4_SYSV_ABI sceHttp2SendRequestAsync() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetAuthEnabled() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetAuthInfoCallback() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetAutoRedirect(s32 id, s32 enable) {
-    LOG_INFO(Lib_Http2, "called id={}, enable={}", id, enable);
-    const s32 result = Libraries::Http::sceHttpSetAutoRedirect(id, enable);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set auto redirect, error = {:#x}", result);
+    if (should_dispatch) {
+        s32 result = Libraries::Http::sceHttpSendRequest(
+            req_id, dispatch_body.empty() ? nullptr : dispatch_body.data(), dispatch_body.size());
+        if (result < 0) {
+            LOG_ERROR(Lib_Http2, "Failed to send HTTP request, error = {:#x}", result);
+        }
+        return result;
     }
-    return result;
-}
 
-s32 PS4_SYSV_ABI sceHttp2SetConnectionWaitTimeOut() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetConnectTimeOut(s32 id, u32 usec) {
-    LOG_INFO(Lib_Http2, "called id={}, usec={}", id, usec);
-    const s32 result = Libraries::Http::sceHttpSetConnectTimeOut(id, usec);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set connect timeout, error = {:#x}", result);
+s32 PS4_SYSV_ABI sceHttp2SendRequestAsync(s32 req_id, const void* data, u64 size, void* user_arg,
+                                          void* reserved) {
+    LOG_INFO(Lib_Http2, "called req_id={}, data={}, size={}, user_arg={}", req_id, fmt::ptr(data),
+             size, fmt::ptr(user_arg));
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::shared_ptr<Http2Context> ctx;
+    bool is_stage1_headers = false;
+    bool should_dispatch_http = false;
+    std::vector<u8> dispatch_body;
+
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it == requests_info.end()) {
+            LOG_ERROR(Lib_Http2, "No request info found for request {}", req_id);
+            return ORBIS_HTTP2_ERROR_INVALID_ID;
+        }
+
+        req_info = it->second;
+        if (req_info->is_websocket) {
+            req_info->user_arg = user_arg;
+            req_info->is_async = true;
+            if (user_arg) {
+                req_info->has_user_event = true;
+                std::memcpy(&req_info->user_event, user_arg, sizeof(OrbisHttp2UserEvent));
+            } else {
+                req_info->has_user_event = false;
+                std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+            }
+            if (auto cit = g_http2_contexts.find(req_info->ctx_id); cit != g_http2_contexts.end()) {
+                ctx = cit->second;
+            }
+
+            LOG_INFO(Lib_Http2, "WebSocket async connect initiated for req_id={}", req_id);
+            std::thread([req_info, ctx, req_id, user_arg]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+                OrbisHttp2AsyncEvent evt{};
+                evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+                evt.req_id = req_id;
+                evt.result = ORBIS_OK;
+                evt.user_arg = user_arg;
+
+                {
+                    std::lock_guard<std::mutex> lk(req_info->event_mutex);
+                    req_info->event_queue.push_back(evt);
+                    req_info->event_cv.notify_one();
+                }
+
+                if (ctx) {
+                    std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+                    ctx->event_queue.push_back(evt);
+                    ctx->queue_cv.notify_one();
+                }
+
+                if (req_info->has_user_event && req_info->user_event.equeue != 0) {
+                    LOG_INFO(Lib_Http2,
+                             "Triggering user event for ws connect req_id={}, equeue={}, id={}, udata={}",
+                             req_id, req_info->user_event.equeue, req_info->user_event.id,
+                             fmt::ptr(req_info->user_event.udata));
+                    s32 trig_res = Libraries::Kernel::sceKernelTriggerUserEvent(
+                        req_info->user_event.equeue, req_info->user_event.id,
+                        req_info->user_event.udata);
+                    if (trig_res < 0) {
+                        LOG_WARNING(Lib_Http2, "sceKernelTriggerUserEvent failed: {:#x}", trig_res);
+                    }
+                    req_info->has_user_event = false;
+                    std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+                }
+            }).detach();
+
+            return ORBIS_OK;
+        }
+
+        if (auto cit = g_http2_contexts.find(req_info->ctx_id); cit != g_http2_contexts.end()) {
+            ctx = cit->second;
+        }
+
+        u64 clen = req_info->content_length;
+        if (clen == 0) {
+            clen = Libraries::Http::GetRequestContentLength(req_id);
+            req_info->content_length = clen;
+        }
+
+        // Check if already fully sent (matching Ghidra FUN_00004ef0: local_60[0x59e] == 1 && sent == content_length)
+        if (req_info->phase == 2 || (req_info->phase == 1 && clen > 0 && req_info->sent_length >= clen)) {
+            LOG_ERROR(Lib_Http2, "Request {} already sent (sent_length={}, content_length={})",
+                      req_id, req_info->sent_length, clen);
+            return ORBIS_HTTP2_ERROR_AFTER_SEND;
+        }
+
+        // Check if exceeding content length (Ghidra FUN_00004ef0: content_length < sent + size)
+        if (clen > 0 && req_info->sent_length + size > clen) {
+            LOG_ERROR(Lib_Http2,
+                      "Request {} data exceeds content_length (sent_length={}, size={}, content_length={})",
+                      req_id, req_info->sent_length, size, clen);
+            return ORBIS_HTTP2_ERROR_OUT_OF_SIZE;
+        }
+
+        req_info->user_arg = user_arg;
+        req_info->is_async = true;
+        if (user_arg) {
+            req_info->has_user_event = true;
+            std::memcpy(&req_info->user_event, user_arg, sizeof(OrbisHttp2UserEvent));
+        } else {
+            req_info->has_user_event = false;
+            std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+        }
+
+        if (req_info->phase == 0) {
+            // First send call
+            if (clen > 0 && size < clen) {
+                // Two-stage send protocol: Stage 1 (Headers phase)
+                is_stage1_headers = true;
+                req_info->phase = 1;
+                if (data && size > 0) {
+                    const u8* ptr = static_cast<const u8*>(data);
+                    req_info->body_buffer.assign(ptr, ptr + size);
+                    req_info->sent_length += size;
+                }
+            } else {
+                // Single-stage send: either clen == 0 or full body passed upfront
+                req_info->phase = 2;
+                req_info->sent_length = size;
+                should_dispatch_http = true;
+                if (data && size > 0) {
+                    const u8* ptr = static_cast<const u8*>(data);
+                    dispatch_body.assign(ptr, ptr + size);
+                }
+            }
+        } else if (req_info->phase == 1) {
+            // Stage 2: Body / streaming data
+            if (data && size > 0) {
+                const u8* ptr = static_cast<const u8*>(data);
+                req_info->body_buffer.insert(req_info->body_buffer.end(), ptr, ptr + size);
+                req_info->sent_length += size;
+            }
+
+            if (req_info->sent_length >= clen) {
+                // Entire body collected! Ready to dispatch underlying HTTP request
+                req_info->phase = 2;
+                should_dispatch_http = true;
+                dispatch_body = req_info->body_buffer;
+            } else {
+                // Multi-chunk in progress: signal completion for this chunk
+                is_stage1_headers = true;
+            }
+        }
     }
-    return result;
-}
 
-s32 PS4_SYSV_ABI sceHttp2SetCookieBox() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
+    if (is_stage1_headers) {
+        LOG_INFO(Lib_Http2,
+                 "Stage 1 (headers / chunk) completed for req_id={}, sent_length={}, content_length={}, signaling SEND_COMPLETE",
+                 req_id, req_info->sent_length, req_info->content_length);
+        std::thread([req_info, ctx, req_id, user_arg]() {
+            OrbisHttp2AsyncEvent evt{};
+            evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+            evt.req_id = req_id;
+            evt.result = ORBIS_OK;
+            evt.reserved = 0;
+            evt.user_arg = user_arg;
 
-s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNum() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
+            {
+                std::lock_guard<std::mutex> lk(req_info->event_mutex);
+                req_info->event_queue.push_back(evt);
+                req_info->event_cv.notify_one();
+            }
 
-s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNumPerDomain() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
+            if (ctx) {
+                std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+                ctx->event_queue.push_back(evt);
+                ctx->queue_cv.notify_one();
+            }
 
-s32 PS4_SYSV_ABI sceHttp2SetCookieMaxSize() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
+            if (req_info->has_user_event && req_info->user_event.equeue != 0) {
+                LOG_INFO(Lib_Http2,
+                         "Triggering user event for headers/chunk req_id={}, equeue={}, id={}, udata={}",
+                         req_id, req_info->user_event.equeue, req_info->user_event.id,
+                         fmt::ptr(req_info->user_event.udata));
+                s32 trig_res = Libraries::Kernel::sceKernelTriggerUserEvent(
+                    req_info->user_event.equeue, req_info->user_event.id,
+                    req_info->user_event.udata);
+                if (trig_res < 0) {
+                    LOG_WARNING(Lib_Http2, "sceKernelTriggerUserEvent failed: {:#x}", trig_res);
+                }
+                req_info->has_user_event = false;
+                std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+            }
+        }).detach();
 
-s32 PS4_SYSV_ABI sceHttp2SetCookieRecvCallback() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetCookieSendCallback() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetInflateGZIPEnabled(s32 id, s32 enable) {
-    LOG_INFO(Lib_Http2, "called id={}, enable={}", id, enable);
-    const s32 result = Libraries::Http::sceHttpSetInflateGZIPEnabled(id, enable);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set gzip inflate, error = {:#x}", result);
+        return ORBIS_OK;
     }
-    return result;
+
+    if (should_dispatch_http) {
+        s32 result = Libraries::Http::sceHttpSendRequest(
+            req_id, dispatch_body.empty() ? nullptr : dispatch_body.data(), dispatch_body.size());
+        if (result < 0) {
+            LOG_ERROR(Lib_Http2, "sceHttpSendRequest failed, error = {:#x}", result);
+            return result;
+        }
+
+        std::thread([req_info, ctx, req_id, user_arg]() {
+            s32 status = 0;
+            s32 poll_res = Libraries::Http::sceHttpGetStatusCode(req_id, &status);
+
+            OrbisHttp2AsyncEvent evt{};
+            evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+            evt.req_id = req_id;
+            evt.result = (poll_res >= 0) ? ORBIS_OK : ORBIS_HTTP2_ERROR_NETWORK;
+            evt.reserved = 0;
+            evt.user_arg = user_arg;
+
+            {
+                std::lock_guard<std::mutex> lk(req_info->event_mutex);
+                req_info->event_queue.push_back(evt);
+                req_info->event_cv.notify_one();
+            }
+
+            if (ctx) {
+                std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+                ctx->event_queue.push_back(evt);
+                ctx->queue_cv.notify_one();
+            }
+
+            if (req_info->has_user_event && req_info->user_event.equeue != 0) {
+                LOG_INFO(Lib_Http2,
+                         "Triggering user event for send req_id={}, equeue={}, id={}, udata={}",
+                         req_id, req_info->user_event.equeue, req_info->user_event.id,
+                         fmt::ptr(req_info->user_event.udata));
+                s32 trig_res = Libraries::Kernel::sceKernelTriggerUserEvent(
+                    req_info->user_event.equeue, req_info->user_event.id,
+                    req_info->user_event.udata);
+                if (trig_res < 0) {
+                    LOG_WARNING(Lib_Http2, "sceKernelTriggerUserEvent failed: {:#x}", trig_res);
+                }
+                req_info->has_user_event = false;
+                std::memset(&req_info->user_event, 0, sizeof(OrbisHttp2UserEvent));
+            }
+        }).detach();
+
+        return ORBIS_OK;
+    }
+
+    return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetMinSslVersion() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHttp2SetAuthEnabled(s32 tmpl_or_req_id, s32 enable) {
+    LOG_INFO(Lib_Http2, "called id={}, enable={}", tmpl_or_req_id, enable);
+    return Libraries::Http::sceHttpSetAuthEnabled(tmpl_or_req_id, enable);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetAuthInfoCallback(s32 tmpl_or_req_id, void* cb, void* user_arg) {
+    LOG_INFO(Lib_Http2, "called id={}, cb={}, user_arg={}", tmpl_or_req_id, fmt::ptr(cb),
+             fmt::ptr(user_arg));
+    return Libraries::Http::sceHttpSetAuthInfoCallback(
+        tmpl_or_req_id, reinterpret_cast<Libraries::Http::OrbisHttpAuthInfoCallback>(cb), user_arg);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetAutoRedirect(s32 tmpl_or_req_id, s32 enable) {
+    LOG_INFO(Lib_Http2, "called id={}, enable={}", tmpl_or_req_id, enable);
+    return Libraries::Http::sceHttpSetAutoRedirect(tmpl_or_req_id, enable);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetConnectionWaitTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(tmpl_or_req_id) == templates_to_contexts.end() &&
+        requests_info.find(tmpl_or_req_id) == requests_info.end()) {
+        s32 ret = Libraries::Http::sceHttpSetConnectTimeOut(tmpl_or_req_id, timeout_us);
+        if (ret < 0 && ret != ::ORBIS_HTTP_ERROR_INVALID_ID) {
+            return ret;
+        }
+    }
     return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetConnectTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    return Libraries::Http::sceHttpSetConnectTimeOut(tmpl_or_req_id, timeout_us);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieBox(s32 tmpl_or_req_id, s32 cookie_box_id) {
+    LOG_INFO(Lib_Http2, "called id={}, cookie_box_id={}", tmpl_or_req_id, cookie_box_id);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (cookie_box_id != 0 && g_cookie_boxes.find(cookie_box_id) == g_cookie_boxes.end()) {
+        LOG_ERROR(Lib_Http2, "Invalid cookie box id {}", cookie_box_id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    g_tmpl_or_req_to_cookie_box[tmpl_or_req_id] = cookie_box_id;
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNum(s32 cookie_box_id, u32 max_num) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_num={}", cookie_box_id, max_num);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_num = max_num;
+        }
+    }
+    return Libraries::Http::sceHttpSetCookieMaxNum(cookie_box_id, max_num);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieMaxNumPerDomain(s32 cookie_box_id, u32 max_num) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_num={}", cookie_box_id, max_num);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_num_per_domain = max_num;
+        }
+    }
+    return Libraries::Http::sceHttpSetCookieMaxNumPerDomain(cookie_box_id, max_num);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieMaxSize(s32 cookie_box_id, u64 max_size) {
+    LOG_INFO(Lib_Http2, "called cookie_box_id={}, max_size={}", cookie_box_id, max_size);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = g_cookie_boxes.find(cookie_box_id);
+        if (it != g_cookie_boxes.end()) {
+            it->second.max_size = max_size;
+        }
+    }
+    return Libraries::Http::sceHttpSetCookieMaxSize(cookie_box_id, static_cast<u32>(max_size));
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieRecvCallback(s32 tmpl_or_req_id, void* cb, void* user_arg) {
+    LOG_INFO(Lib_Http2, "called id={}, cb={}, user_arg={}", tmpl_or_req_id, fmt::ptr(cb),
+             fmt::ptr(user_arg));
+    return Libraries::Http::sceHttpSetCookieRecvCallback(
+        tmpl_or_req_id, reinterpret_cast<Libraries::Http::OrbisHttpCookieRecvCallback>(cb),
+        user_arg);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetCookieSendCallback(s32 tmpl_or_req_id, void* cb, void* user_arg) {
+    LOG_INFO(Lib_Http2, "called id={}, cb={}, user_arg={}", tmpl_or_req_id, fmt::ptr(cb),
+             fmt::ptr(user_arg));
+    return Libraries::Http::sceHttpSetCookieSendCallback(
+        tmpl_or_req_id, reinterpret_cast<Libraries::Http::OrbisHttpCookieSendCallback>(cb),
+        user_arg);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetInflateGZIPEnabled(s32 tmpl_or_req_id, s32 enable) {
+    LOG_INFO(Lib_Http2, "called id={}, enable={}", tmpl_or_req_id, enable);
+    return Libraries::Http::sceHttpSetInflateGZIPEnabled(tmpl_or_req_id, enable);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetMinSslVersion(s32 tmpl_or_req_id, u32 version) {
+    LOG_INFO(Lib_Http2, "called id={}, version={}", tmpl_or_req_id, version);
+    return Libraries::Http::sceHttpsSetMinSslVersion(tmpl_or_req_id, version);
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetPreSendCallback(s32 template_id, OrbisHttp2PreSendCallback cb_func,
                                             void* user_arg) {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
-}
-
-s32 PS4_SYSV_ABI sceHttp2SetRecvTimeOut(s32 id, u32 usec) {
-    LOG_INFO(Lib_Http2, "called id={}, usec={}", id, usec);
-    const s32 result = Libraries::Http::sceHttpSetRecvTimeOut(id, usec);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set receive timeout, error = {:#x}", result);
+    LOG_INFO(Lib_Http2, "called template_id={}, cb_func={}, user_arg={}", template_id,
+             fmt::ptr(cb_func), fmt::ptr(user_arg));
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = templates_to_contexts.find(template_id);
+    if (it == templates_to_contexts.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
     }
-    return result;
+    g_presend_callbacks[template_id] = {cb_func, user_arg};
+    return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetRedirectCallback() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2SetRecvTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    return Libraries::Http::sceHttpSetRecvTimeOut(tmpl_or_req_id, timeout_us);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SetRedirectCallback(s32 tmpl_or_req_id, void* cb, void* user_arg) {
+    LOG_INFO(Lib_Http2, "called id={}, cb={}, user_arg={}", tmpl_or_req_id, fmt::ptr(cb),
+             fmt::ptr(user_arg));
+    return Libraries::Http::sceHttpSetRedirectCallback(
+        tmpl_or_req_id, reinterpret_cast<Libraries::Http::OrbisHttpRedirectCallback>(cb), user_arg);
 }
 
 s32 PS4_SYSV_ABI sceHttp2SetRequestContentLength(s32 req_id, u64 content_length) {
-    LOG_INFO(Lib_Http2, "called");
+    LOG_INFO(Lib_Http2, "called req_id={}, content_length={}", req_id, content_length);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto it = requests_info.find(req_id); it != requests_info.end()) {
+            it->second->content_length = content_length;
+        }
+    }
     s32 result = Libraries::Http::sceHttpSetRequestContentLength(req_id, content_length);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to set HTTP request content length, error = {:#x}", result);
@@ -358,61 +974,62 @@ s32 PS4_SYSV_ABI sceHttp2SetRequestContentLength(s32 req_id, u64 content_length)
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetResolveRetry(s32 id, s32 retry) {
-    LOG_INFO(Lib_Http2, "called id={}, retry={}", id, retry);
-    const s32 result = Libraries::Http::sceHttpSetResolveRetry(id, retry);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set resolve retry, error = {:#x}", result);
+s32 PS4_SYSV_ABI sceHttp2SetRequestNoContentLength(s32 req_id) {
+    LOG_INFO(Lib_Http2, "called req_id={}", req_id);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto it = requests_info.find(req_id); it != requests_info.end()) {
+            it->second->content_length = 0;
+        }
     }
-    return result;
+    return Libraries::Http::sceHttpSetRequestContentLength(req_id, 0);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetResolveTimeOut() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2SetResolveRetry(s32 tmpl_or_req_id, s32 retry) {
+    LOG_INFO(Lib_Http2, "called id={}, retry={}", tmpl_or_req_id, retry);
+    return Libraries::Http::sceHttpSetResolveRetry(tmpl_or_req_id, retry);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetSendTimeOut(s32 id, u32 usec) {
-    LOG_INFO(Lib_Http2, "called id={}, usec={}", id, usec);
-    const s32 result = Libraries::Http::sceHttpSetSendTimeOut(id, usec);
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set send timeout, error = {:#x}", result);
-    }
-    return result;
+s32 PS4_SYSV_ABI sceHttp2SetResolveTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    return Libraries::Http::sceHttpSetResolveTimeOut(tmpl_or_req_id, timeout_us);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetSslCallback() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2SetSendTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    return Libraries::Http::sceHttpSetSendTimeOut(tmpl_or_req_id, timeout_us);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SetTimeOut(s32 id, u32 usec) {
-    LOG_INFO(Lib_Http2, "called id={}, usec={}", id, usec);
-    s32 result = Libraries::Http::sceHttpSetConnectTimeOut(id, usec);
-    if (result >= 0) {
-        result = Libraries::Http::sceHttpSetSendTimeOut(id, usec);
-    }
-    if (result >= 0) {
-        result = Libraries::Http::sceHttpSetRecvTimeOut(id, usec);
-    }
-    if (result < 0) {
-        LOG_ERROR(Lib_Http2, "Failed to set timeout, error = {:#x}", result);
-    }
-    return result;
+s32 PS4_SYSV_ABI sceHttp2SetSslCallback(s32 tmpl_or_req_id, void* cb, void* user_arg) {
+    LOG_INFO(Lib_Http2, "called id={}, cb={}, user_arg={}", tmpl_or_req_id, fmt::ptr(cb),
+             fmt::ptr(user_arg));
+    return Libraries::Http::sceHttpsSetSslCallback(
+        tmpl_or_req_id, reinterpret_cast<Libraries::Http::OrbisHttpsCallback>(cb), user_arg);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SslDisableOption() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2SetTimeOut(s32 tmpl_or_req_id, u32 timeout_us) {
+    LOG_INFO(Lib_Http2, "called id={}, timeout_us={}", tmpl_or_req_id, timeout_us);
+    Libraries::Http::sceHttpSetConnectTimeOut(tmpl_or_req_id, timeout_us);
+    Libraries::Http::sceHttpSetSendTimeOut(tmpl_or_req_id, timeout_us);
+    return Libraries::Http::sceHttpSetRecvTimeOut(tmpl_or_req_id, timeout_us);
 }
 
-s32 PS4_SYSV_ABI sceHttp2SslEnableOption() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHttp2SslDisableOption(s32 tmpl_or_req_id, u32 option) {
+    LOG_INFO(Lib_Http2, "called id={}, option={:#x}", tmpl_or_req_id, option);
+    return Libraries::Http::sceHttpsDisableOption(tmpl_or_req_id, option);
+}
+
+s32 PS4_SYSV_ABI sceHttp2SslEnableOption(s32 tmpl_or_req_id, u32 option) {
+    LOG_INFO(Lib_Http2, "called id={}, option={:#x}", tmpl_or_req_id, option);
+    return Libraries::Http::sceHttpsEnableOption(tmpl_or_req_id, option);
 }
 
 s32 PS4_SYSV_ABI sceHttp2Term(s32 ctx_id) {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called ctx_id={}", ctx_id);
+    LOG_INFO(Lib_Http2, "called ctx_id={}", ctx_id);
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        g_http2_contexts.erase(ctx_id);
+    }
     const s32 result = Libraries::Http::sceHttpTerm(ctx_id);
     if (result < 0) {
         LOG_ERROR(Lib_Http2, "Failed to terminate HTTP context {}, error = {:#x}", ctx_id, result);
@@ -420,67 +1037,467 @@ s32 PS4_SYSV_ABI sceHttp2Term(s32 ctx_id) {
     return result;
 }
 
-s32 PS4_SYSV_ABI sceHttp2WaitAsync() {
-    LOG_ERROR(Lib_Http2, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHttp2WaitAsync(s32 id, OrbisHttp2AsyncEvent* event, const u32* timeout,
+                                   void* reserved) {
+    LOG_INFO(Lib_Http2, "called id={}, event={}, timeout={}, reserved={}", id, fmt::ptr(event),
+             timeout ? *timeout : 0, fmt::ptr(reserved));
+    if (!event) {
+        LOG_ERROR(Lib_Http2, "Null event pointer");
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    if (reserved != nullptr) {
+        LOG_ERROR(Lib_Http2, "Non-null reserved pointer: {}", fmt::ptr(reserved));
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        if (auto rit = requests_info.find(id); rit != requests_info.end()) {
+            req_info = rit->second;
+            if (auto cit = g_http2_contexts.find(req_info->ctx_id);
+                cit != g_http2_contexts.end()) {
+                ctx = cit->second;
+            }
+        } else if (auto it = g_http2_contexts.find(id); it != g_http2_contexts.end()) {
+            ctx = it->second;
+        }
+    }
+
+    if (!req_info && !ctx) {
+        LOG_ERROR(Lib_Http2, "Invalid id={} (neither req_id nor ctx_id found)", id);
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+
+    const bool has_timeout = (timeout != nullptr);
+    const u32 timeout_us = has_timeout ? *timeout : 0;
+
+    if (req_info) {
+        std::unique_lock<std::mutex> lk(req_info->event_mutex);
+        if (req_info->event_queue.empty()) {
+            if (has_timeout && timeout_us == 0) {
+                return ORBIS_HTTP2_ERROR_TIMED_OUT;
+            }
+            if (has_timeout) {
+                bool acquired = req_info->event_cv.wait_for(
+                    lk, std::chrono::microseconds(timeout_us),
+                    [&] { return !req_info->event_queue.empty(); });
+                if (!acquired || req_info->event_queue.empty()) {
+                    return ORBIS_HTTP2_ERROR_TIMED_OUT;
+                }
+            } else {
+                req_info->event_cv.wait(lk, [&] { return !req_info->event_queue.empty(); });
+            }
+        }
+
+        *event = req_info->event_queue.front();
+        req_info->event_queue.pop_front();
+
+        if (ctx) {
+            std::lock_guard<std::mutex> clk(ctx->queue_mutex);
+            auto cit = std::find_if(ctx->event_queue.begin(), ctx->event_queue.end(),
+                                    [&](const OrbisHttp2AsyncEvent& e) {
+                                        return e.req_id == event->req_id &&
+                                               e.event_type == event->event_type;
+                                    });
+            if (cit != ctx->event_queue.end()) {
+                ctx->event_queue.erase(cit);
+            }
+        }
+
+        LOG_INFO(Lib_Http2, "sceHttp2WaitAsync(req): Delivered event type={}, req_id={}, result={:#x}",
+                 event->event_type, event->req_id, event->result);
+        return ORBIS_OK;
+    }
+
+    std::unique_lock<std::mutex> lk(ctx->queue_mutex);
+    if (ctx->event_queue.empty()) {
+        if (has_timeout && timeout_us == 0) {
+            return ORBIS_HTTP2_ERROR_TIMED_OUT;
+        }
+        if (has_timeout) {
+            bool acquired = ctx->queue_cv.wait_for(
+                lk, std::chrono::microseconds(timeout_us),
+                [&] { return !ctx->event_queue.empty(); });
+            if (!acquired || ctx->event_queue.empty()) {
+                return ORBIS_HTTP2_ERROR_TIMED_OUT;
+            }
+        } else {
+            ctx->queue_cv.wait(lk, [&] { return !ctx->event_queue.empty(); });
+        }
+    }
+
+    *event = ctx->event_queue.front();
+    ctx->event_queue.pop_front();
+
+    LOG_INFO(Lib_Http2, "sceHttp2WaitAsync(ctx): Delivered event type={}, req_id={}, result={:#x}",
+             event->event_type, event->req_id, event->result);
     return ORBIS_OK;
 }
 
+// WebSocket functions
+s32 PS4_SYSV_ABI sceHttp2WebSocketCreateRequest(s32 tmpl_id, const char* url, const char* protocol,
+                                                void* opt, void* user_arg, void* extra) {
+    LOG_INFO(Lib_Http2, "called tmpl_id={}, url={}, protocol={}, user_arg={}", tmpl_id,
+             url ? url : "null", protocol ? protocol : "null", fmt::ptr(user_arg));
+    if (!url) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+
+    if (!EmulatorSettings.IsConnectedToNetwork()) {
+        LOG_INFO(Lib_Http2, "Network is offline, returning ORBIS_HTTP2_ERROR_NETWORK");
+        return ORBIS_HTTP2_ERROR_NETWORK;
+    }
+
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    s32 ctx_id = -1;
+    if (auto it = templates_to_contexts.find(tmpl_id); it != templates_to_contexts.end()) {
+        ctx_id = it->second;
+    }
+
+    s32 req_id = g_next_ws_req_id.fetch_add(1);
+    auto info = std::make_shared<Http2RequestInfo>();
+    info->ctx_id = ctx_id;
+    info->tmpl_id = tmpl_id;
+    info->req_id = req_id;
+    info->is_websocket = true;
+    info->user_arg = user_arg;
+    requests_info[req_id] = info;
+
+    return req_id;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSendTextMessage(s32 req_id, const char* text, u64 size) {
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
+    if (!text) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return static_cast<s32>(size);
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSendTextMessageAsync(s32 req_id, const char* text, u64 size,
+                                                       void* user_arg, void* reserved) {
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}, user_arg={}", req_id, size, fmt::ptr(user_arg));
+    if (!text) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it == requests_info.end() || !it->second->is_websocket) {
+            return ORBIS_HTTP2_ERROR_INVALID_ID;
+        }
+        req_info = it->second;
+        if (auto cit = g_http2_contexts.find(it->second->ctx_id); cit != g_http2_contexts.end()) {
+            ctx = cit->second;
+        }
+    }
+    std::thread([req_info, ctx, req_id, user_arg]() {
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+        evt.req_id = req_id;
+        evt.result = ORBIS_OK;
+        evt.user_arg = user_arg;
+
+        if (req_info) {
+            std::lock_guard<std::mutex> lk(req_info->event_mutex);
+            req_info->event_queue.push_back(evt);
+            req_info->event_cv.notify_one();
+        }
+
+        if (ctx) {
+            std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+            ctx->event_queue.push_back(evt);
+            ctx->queue_cv.notify_one();
+        }
+
+        if (user_arg) {
+            OrbisHttp2UserEvent u_ev{};
+            std::memcpy(&u_ev, user_arg, sizeof(OrbisHttp2UserEvent));
+            if (u_ev.equeue != 0) {
+                Libraries::Kernel::sceKernelTriggerUserEvent(u_ev.equeue, u_ev.id, u_ev.udata);
+            }
+        }
+    }).detach();
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSendDataMessage(s32 req_id, const void* data, u64 size) {
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}", req_id, size);
+    if (!data) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return static_cast<s32>(size);
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSendDataMessageAsync(s32 req_id, const void* data, u64 size,
+                                                       void* user_arg, void* reserved) {
+    LOG_INFO(Lib_Http2, "called req_id={}, size={}, user_arg={}", req_id, size, fmt::ptr(user_arg));
+    if (!data) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::shared_ptr<Http2RequestInfo> req_info;
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it == requests_info.end() || !it->second->is_websocket) {
+            return ORBIS_HTTP2_ERROR_INVALID_ID;
+        }
+        req_info = it->second;
+        if (auto cit = g_http2_contexts.find(it->second->ctx_id); cit != g_http2_contexts.end()) {
+            ctx = cit->second;
+        }
+    }
+    std::thread([req_info, ctx, req_id, user_arg]() {
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_SEND_COMPLETE;
+        evt.req_id = req_id;
+        evt.result = ORBIS_OK;
+        evt.user_arg = user_arg;
+
+        if (req_info) {
+            std::lock_guard<std::mutex> lk(req_info->event_mutex);
+            req_info->event_queue.push_back(evt);
+            req_info->event_cv.notify_one();
+        }
+
+        if (ctx) {
+            std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+            ctx->event_queue.push_back(evt);
+            ctx->queue_cv.notify_one();
+        }
+
+        if (user_arg) {
+            OrbisHttp2UserEvent u_ev{};
+            std::memcpy(&u_ev, user_arg, sizeof(OrbisHttp2UserEvent));
+            if (u_ev.equeue != 0) {
+                Libraries::Kernel::sceKernelTriggerUserEvent(u_ev.equeue, u_ev.id, u_ev.udata);
+            }
+        }
+    }).detach();
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketClose(s32 req_id, u16 code, const char* reason, u64 reason_len) {
+    LOG_INFO(Lib_Http2, "called req_id={}, code={}", req_id, code);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    requests_info.erase(it);
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketCloseAsync(s32 req_id, u16 code, const char* reason,
+                                             u64 reason_len, void* user_arg, void* reserved) {
+    LOG_INFO(Lib_Http2, "called req_id={}, code={}, user_arg={}", req_id, code, fmt::ptr(user_arg));
+    std::shared_ptr<Http2Context> ctx;
+    {
+        std::lock_guard<std::mutex> lock(g_http2_mutex);
+        auto it = requests_info.find(req_id);
+        if (it != requests_info.end()) {
+            if (auto cit = g_http2_contexts.find(it->second->ctx_id);
+                cit != g_http2_contexts.end()) {
+                ctx = cit->second;
+            }
+            requests_info.erase(it);
+        }
+    }
+
+    if (ctx) {
+        OrbisHttp2AsyncEvent evt{};
+        evt.event_type = ORBIS_HTTP2_ASYNC_EVENT_WS_CLOSED;
+        evt.req_id = req_id;
+        evt.result = ORBIS_OK;
+        evt.user_arg = user_arg;
+
+        std::lock_guard<std::mutex> lk(ctx->queue_mutex);
+        ctx->event_queue.push_back(evt);
+        ctx->queue_cv.notify_one();
+    }
+
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSetPingInterval(s32 req_id, u32 interval_ms) {
+    LOG_INFO(Lib_Http2, "called req_id={}, interval_ms={}", req_id, interval_ms);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2WebSocketSetPingTimeout(s32 req_id, u32 timeout_ms) {
+    LOG_INFO(Lib_Http2, "called req_id={}, timeout_ms={}", req_id, timeout_ms);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(req_id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return ORBIS_OK;
+}
+
+// Reverse-engineered internal/unknown SPRX exports
+s32 PS4_SYSV_ABI sceHttp2Unknown_zx9s1Lk(s32 id, const char* domain) {
+    LOG_INFO(Lib_Http2, "called id={}, domain={}", id, domain ? domain : "null");
+    if (!domain) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2Unknown_mMWZm0(s32 id, u32 val) {
+    LOG_INFO(Lib_Http2, "called id={}, val={}", id, val);
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2Unknown_yYVB1y(s32 id, void* ptr) {
+    LOG_INFO(Lib_Http2, "called id={}, ptr={}", id, fmt::ptr(ptr));
+    if (!ptr) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (g_http2_contexts.find(id) == g_http2_contexts.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    *reinterpret_cast<s32*>(ptr) = 1; // Context is active/ready
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2Unknown_fkKvmz(s32 id, void* ptr) {
+    LOG_INFO(Lib_Http2, "called id={}, ptr={}", id, fmt::ptr(ptr));
+    if (!ptr) {
+        return ORBIS_HTTP2_ERROR_INVALID_POINTER;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    if (templates_to_contexts.find(id) == templates_to_contexts.end() &&
+        requests_info.find(id) == requests_info.end()) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    std::memset(ptr, 0, 0x40);
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceHttp2Unknown_4PUc7B(s32 id, u32 val) {
+    LOG_INFO(Lib_Http2, "called id={}, val={}", id, val);
+    if (val < 1000000) {
+        return ORBIS_HTTP2_ERROR_INVALID_VALUE;
+    }
+    std::lock_guard<std::mutex> lock(g_http2_mutex);
+    auto it = requests_info.find(id);
+    if (it == requests_info.end() || !it->second->is_websocket) {
+        return ORBIS_HTTP2_ERROR_INVALID_ID;
+    }
+    it->second->ws_pong_timeout = val;
+    return ORBIS_OK;
+}
+
+void PS4_SYSV_ABI dummy() {
+    LOG_TRACE(Lib_Http2, "called");
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
-    LIB_FUNCTION("IZ-qjhRqvjk", "libSceHttp2", 1, "libSceHttp2", sceHttp2AbortRequest);
-    LIB_FUNCTION("flPxnowtvWY", "libSceHttp2", 1, "libSceHttp2", sceHttp2AddCookie);
-    LIB_FUNCTION("nrPfOE8TQu0", "libSceHttp2", 1, "libSceHttp2", sceHttp2AddRequestHeader);
-    LIB_FUNCTION("WeuDjj5m4YU", "libSceHttp2", 1, "libSceHttp2", sceHttp2AuthCacheFlush);
-    LIB_FUNCTION("JlFGR4v50Kw", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieExport);
-    LIB_FUNCTION("5VlQSzXW-SQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieFlush);
-    LIB_FUNCTION("B5ibZI5UlzU", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieImport);
-    LIB_FUNCTION("N4UfjvWJsMw", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateCookieBox);
-    LIB_FUNCTION("mmyOCxQMVYQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateRequestWithURL);
-    LIB_FUNCTION("+wCt7fCijgk", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateTemplate);
-    LIB_FUNCTION("O9ync3F-JVI", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteCookieBox);
-    LIB_FUNCTION("c8D9qIjo8EY", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteRequest);
-    LIB_FUNCTION("pDom5-078DA", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteTemplate);
-    LIB_FUNCTION("-rdXUi2XW90", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAllResponseHeaders);
-    LIB_FUNCTION("m-OL13q8AI8", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAuthEnabled);
-    LIB_FUNCTION("od5QCZhZSfw", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAutoRedirect);
-    LIB_FUNCTION("GQFGj0rYX+A", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookie);
-    LIB_FUNCTION("IX23slKvtQI", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookieBox);
-    LIB_FUNCTION("eij7UzkUqK8", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookieStats);
-    LIB_FUNCTION("otUQuZa-mv0", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetMemoryPoolStats);
-    LIB_FUNCTION("o0DBQpFE13o", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetResponseContentLength);
-    LIB_FUNCTION("9XYJwCf3lEA", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetStatusCode);
+    LIB_FUNCTION("AS45QoYHjc4", "libSceHttp2", 1, "libSceHttp2", dummy);
     LIB_FUNCTION("3JCe3lCbQ8A", "libSceHttp2", 1, "libSceHttp2", sceHttp2Init);
-    LIB_FUNCTION("QygCNNmbGss", "libSceHttp2", 1, "libSceHttp2", sceHttp2ReadData);
-    LIB_FUNCTION("bGN-6zbo7ms", "libSceHttp2", 1, "libSceHttp2", sceHttp2ReadDataAsync);
-    LIB_FUNCTION("klwUy2Wg+q8", "libSceHttp2", 1, "libSceHttp2", sceHttp2RedirectCacheFlush);
-    LIB_FUNCTION("jHdP0CS4ZlA", "libSceHttp2", 1, "libSceHttp2", sceHttp2RemoveRequestHeader);
+    LIB_FUNCTION("YiBUtz-pGkc", "libSceHttp2", 1, "libSceHttp2", sceHttp2Term);
+    LIB_FUNCTION("otUQuZa-mv0", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetMemoryPoolStats);
+    LIB_FUNCTION("mmyOCxQMVYQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateRequestWithURL);
+    LIB_FUNCTION("o0DBQpFE13o", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetResponseContentLength);
+    LIB_FUNCTION("+wCt7fCijgk", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateTemplate);
+    LIB_FUNCTION("N4UfjvWJsMw", "libSceHttp2", 1, "libSceHttp2", sceHttp2CreateCookieBox);
+    LIB_FUNCTION("O9ync3F-JVI", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteCookieBox);
+    LIB_FUNCTION("jrVHsKCXA0g", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieBox);
+    LIB_FUNCTION("IX23slKvtQI", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookieBox);
+    LIB_FUNCTION("pDom5-078DA", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteTemplate);
+    LIB_FUNCTION("c8D9qIjo8EY", "libSceHttp2", 1, "libSceHttp2", sceHttp2DeleteRequest);
+    LIB_FUNCTION("EWcwMpbr5F8", "libSceHttp2", 1, "libSceHttp2", sceHttp2SslEnableOption);
+    LIB_FUNCTION("B37SruheQ5Y", "libSceHttp2", 1, "libSceHttp2", sceHttp2SslDisableOption);
+    LIB_FUNCTION("YrWX+DhPHQY", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetSslCallback);
+    LIB_FUNCTION("9XYJwCf3lEA", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetStatusCode);
+    LIB_FUNCTION("-rdXUi2XW90", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAllResponseHeaders);
+    LIB_FUNCTION("CjxqMyx2-pU", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAllTrailingHeaders);
+    LIB_FUNCTION("nrPfOE8TQu0", "libSceHttp2", 1, "libSceHttp2", sceHttp2AddRequestHeader);
     LIB_FUNCTION("rbqZig38AT8", "libSceHttp2", 1, "libSceHttp2", sceHttp2SendRequest);
     LIB_FUNCTION("A+NVAFu4eCg", "libSceHttp2", 1, "libSceHttp2", sceHttp2SendRequestAsync);
-    LIB_FUNCTION("jjFahkBPCYs", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAuthEnabled);
-    LIB_FUNCTION("Wwj6HbB2mOo", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAuthInfoCallback);
-    LIB_FUNCTION("b9AvoIaOuHI", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAutoRedirect);
-    LIB_FUNCTION("n8hMLe31OPA", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetConnectionWaitTimeOut);
-    LIB_FUNCTION("-HIO4VT87v8", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetConnectTimeOut);
-    LIB_FUNCTION("jrVHsKCXA0g", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieBox);
-    LIB_FUNCTION("mPKVhQqh2Es", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxNum);
-    LIB_FUNCTION("o7+WXe4WadE", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxNumPerDomain);
-    LIB_FUNCTION("6a0N6GPD7RM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxSize);
+    LIB_FUNCTION("QygCNNmbGss", "libSceHttp2", 1, "libSceHttp2", sceHttp2ReadData);
+    LIB_FUNCTION("bGN-6zbo7ms", "libSceHttp2", 1, "libSceHttp2", sceHttp2ReadDataAsync);
+    LIB_FUNCTION("MOp-AUhdfi8", "libSceHttp2", 1, "libSceHttp2", sceHttp2WaitAsync);
+    LIB_FUNCTION("IZ-qjhRqvjk", "libSceHttp2", 1, "libSceHttp2", sceHttp2AbortRequest);
+    LIB_FUNCTION("jHdP0CS4ZlA", "libSceHttp2", 1, "libSceHttp2", sceHttp2RemoveRequestHeader);
+    LIB_FUNCTION("FSAFOzi0FpM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRequestContentLength);
+    LIB_FUNCTION("bEegosRhgM0", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRequestNoContentLength);
+    LIB_FUNCTION("zx9s1Lk+O90", "libSceHttp2", 1, "libSceHttp2", sceHttp2Unknown_zx9s1Lk);
+    LIB_FUNCTION("uRosf8GQbHQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetInflateGZIPEnabled);
+    LIB_FUNCTION("mMWZm0+7XHM", "libSceHttp2", 1, "libSceHttp2", sceHttp2Unknown_mMWZm0);
     LIB_FUNCTION("zdtXKn9X7no", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieRecvCallback);
     LIB_FUNCTION("McYmUpQ3-DY", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieSendCallback);
-    LIB_FUNCTION("uRosf8GQbHQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetInflateGZIPEnabled);
-    LIB_FUNCTION("09tk+kIA1Ns", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetMinSslVersion);
-    LIB_FUNCTION("UL4Fviw+IAM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetPreSendCallback);
-    LIB_FUNCTION("izvHhqgDt44", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRecvTimeOut);
+    LIB_FUNCTION("GQFGj0rYX+A", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookie);
+    LIB_FUNCTION("flPxnowtvWY", "libSceHttp2", 1, "libSceHttp2", sceHttp2AddCookie);
+    LIB_FUNCTION("JlFGR4v50Kw", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieExport);
+    LIB_FUNCTION("B5ibZI5UlzU", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieImport);
+    LIB_FUNCTION("5VlQSzXW-SQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2CookieFlush);
+    LIB_FUNCTION("6a0N6GPD7RM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxSize);
+    LIB_FUNCTION("mPKVhQqh2Es", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxNum);
+    LIB_FUNCTION("o7+WXe4WadE", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetCookieMaxNumPerDomain);
+    LIB_FUNCTION("eij7UzkUqK8", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetCookieStats);
+    LIB_FUNCTION("Wwj6HbB2mOo", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAuthInfoCallback);
+    LIB_FUNCTION("jjFahkBPCYs", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAuthEnabled);
+    LIB_FUNCTION("m-OL13q8AI8", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAuthEnabled);
+    LIB_FUNCTION("WeuDjj5m4YU", "libSceHttp2", 1, "libSceHttp2", sceHttp2AuthCacheFlush);
     LIB_FUNCTION("BJgi0CH7al4", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRedirectCallback);
-    LIB_FUNCTION("FSAFOzi0FpM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRequestContentLength);
-    LIB_FUNCTION("Gcjh+CisAZM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetResolveRetry);
-    LIB_FUNCTION("ACjtE27aErY", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetResolveTimeOut);
-    LIB_FUNCTION("XPtW45xiLHk", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetSendTimeOut);
-    LIB_FUNCTION("YrWX+DhPHQY", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetSslCallback);
+    LIB_FUNCTION("b9AvoIaOuHI", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetAutoRedirect);
+    LIB_FUNCTION("od5QCZhZSfw", "libSceHttp2", 1, "libSceHttp2", sceHttp2GetAutoRedirect);
+    LIB_FUNCTION("klwUy2Wg+q8", "libSceHttp2", 1, "libSceHttp2", sceHttp2RedirectCacheFlush);
     LIB_FUNCTION("VYMxTcBqSE0", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetTimeOut);
-    LIB_FUNCTION("B37SruheQ5Y", "libSceHttp2", 1, "libSceHttp2", sceHttp2SslDisableOption);
-    LIB_FUNCTION("EWcwMpbr5F8", "libSceHttp2", 1, "libSceHttp2", sceHttp2SslEnableOption);
-    LIB_FUNCTION("YiBUtz-pGkc", "libSceHttp2", 1, "libSceHttp2", sceHttp2Term);
-    LIB_FUNCTION("MOp-AUhdfi8", "libSceHttp2", 1, "libSceHttp2", sceHttp2WaitAsync);
-};
+    LIB_FUNCTION("ACjtE27aErY", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetResolveTimeOut);
+    LIB_FUNCTION("Gcjh+CisAZM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetResolveRetry);
+    LIB_FUNCTION("-HIO4VT87v8", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetConnectTimeOut);
+    LIB_FUNCTION("XPtW45xiLHk", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetSendTimeOut);
+    LIB_FUNCTION("izvHhqgDt44", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetRecvTimeOut);
+    LIB_FUNCTION("n8hMLe31OPA", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetConnectionWaitTimeOut);
+    LIB_FUNCTION("UL4Fviw+IAM", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetPreSendCallback);
+    LIB_FUNCTION("09tk+kIA1Ns", "libSceHttp2", 1, "libSceHttp2", sceHttp2SetMinSslVersion);
+    LIB_FUNCTION("yYVB1yGq35k", "libSceHttp2", 1, "libSceHttp2", sceHttp2Unknown_yYVB1y);
+    LIB_FUNCTION("fkKvmzFNBe8", "libSceHttp2", 1, "libSceHttp2", sceHttp2Unknown_fkKvmz);
+    LIB_FUNCTION("-0wUiGX74GQ", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketCreateRequest);
+    LIB_FUNCTION("jSHMX1oSE+E", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketSendTextMessage);
+    LIB_FUNCTION("WYszaHaIkWs", "libSceHttp2", 1, "libSceHttp2",
+                 sceHttp2WebSocketSendTextMessageAsync);
+    LIB_FUNCTION("D1IAo-CNswA", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketSendDataMessage);
+    LIB_FUNCTION("ksn0O9Iilb0", "libSceHttp2", 1, "libSceHttp2",
+                 sceHttp2WebSocketSendDataMessageAsync);
+    LIB_FUNCTION("v2hFBiyS13w", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketClose);
+    LIB_FUNCTION("BlZ8niq3nHU", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketCloseAsync);
+    LIB_FUNCTION("-MU9L6S3Fj4", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketSetPingTimeout);
+    LIB_FUNCTION("YfaXPnc8PJE", "libSceHttp2", 1, "libSceHttp2", sceHttp2WebSocketSetPingInterval);
+    LIB_FUNCTION("4PUc7B6Zr+c", "libSceHttp2", 1, "libSceHttp2", sceHttp2Unknown_4PUc7B);
+}
 
 } // namespace Libraries::Http2

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/libraries/kernel/time.h"
-#include "core/libraries/np/np_web_api/np_web_api.h"
 #include "core/libraries/np/np_web_api2/np_web_api2.h"
 #include "core/libraries/np/np_web_api2/np_web_api2_internal.h"
 #include "core/libraries/np/np_web_api2/np_web_api2_push_event.h"
@@ -92,8 +91,6 @@ public:
     }
 
     void CheckTimeout();
-
-    void DispatchPushEvent(const NpWebApi::PushEventInput& ev);
 
     s32 CreatePushEventHandle();
     PushEventHandle* GetPushEventHandle(s32 handle_id);
@@ -260,8 +257,6 @@ public:
 
     void CheckTimeout();
 
-    void DispatchPushEvent(const NpWebApi::PushEventInput& ev);
-
     s32 CreatePushEventCallback(s32 filter_id, OrbisNpWebApi2PushEventCallback cb_func,
                                 void* user_arg);
     s32 DeletePushEventCallback(s32 callback_id);
@@ -304,7 +299,6 @@ private:
     bool push_contexts_busy{};
     LibraryContext* parent_ctx{};
     std::string user_agent{};
-    std::string DescribePushCallbacks();
     std::map<s64, Request*> requests{};
     std::map<s32, PushEventCallback*> push_event_callbacks{};
     std::map<s64, PushEventPushContext*> push_contexts{};
