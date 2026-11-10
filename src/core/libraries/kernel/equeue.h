@@ -203,6 +203,7 @@ private:
 
 EqueueInternal* GetEqueue(OrbisKernelEqueue eq);
 u64 PS4_SYSV_ABI sceKernelGetEventData(const OrbisKernelEvent* ev);
+int PS4_SYSV_ABI sceKernelTriggerUserEvent(OrbisKernelEqueue eq, int id, void* udata);
 
 void RegisterEventQueue(Core::Loader::SymbolsResolver* sym);
 
