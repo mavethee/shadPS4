@@ -525,8 +525,15 @@ int PS4_SYSV_ABI scePadResetOrientationForTracker() {
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI scePadSetAngularVelocityBiasCorrectionState() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
+int PS4_SYSV_ABI scePadSetAngularVelocityBiasCorrectionState(s32 handle, bool bEnable) {
+    LOG_INFO(Lib_Pad, "called handle={}, bEnable={}", handle, bEnable);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
     return ORBIS_OK;
 }
 
@@ -725,23 +732,104 @@ int PS4_SYSV_ABI scePadVirtualDeviceInsertData() {
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI Func_298D21481F94C9FA() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
+int PS4_SYSV_ABI Func_298D21481F94C9FA(u32 mask) {
+    LOG_INFO(Lib_Pad, "called mask=0x{:x}", mask);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI Func_51E514BCD3A05CA5() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
+int PS4_SYSV_ABI scePadIsChargingCableConnected(s32 handle) {
+    LOG_INFO(Lib_Pad, "called handle={}", handle);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    const Input::State state = it->second->ReadState();
+    return state.connected ? 1 : 0;
+}
+
+int PS4_SYSV_ABI scePadCalculateDeltaTime(s32 handle, u16 time1, u16 time2, float* pDeltaTime) {
+    LOG_TRACE(Lib_Pad, "called handle={}, time1={}, time2={}", handle, time1, time2);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    if (!pDeltaTime) {
+        return ORBIS_PAD_ERROR_INVALID_ARG;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    *pDeltaTime = static_cast<float>(static_cast<u16>(time2 - time1)) * 1000.0f * 1e-6f;
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI Func_89C9237E393DA243() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
+int PS4_SYSV_ABI Func_EF103E845B6F0420(s32 handle, u32 value) {
+    LOG_INFO(Lib_Pad, "called handle={}, value={}", handle, value);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI Func_EF103E845B6F0420() {
-    LOG_ERROR(Lib_Pad, "(STUBBED) called");
+int PS4_SYSV_ABI scePadIsRemoteController(s32 handle, bool* pOut) {
+    LOG_INFO(Lib_Pad, "called handle={}, pOut={}", handle, fmt::ptr(pOut));
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    if (!pOut) {
+        return ORBIS_PAD_ERROR_INVALID_ARG;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    *pOut = false;
+    return ORBIS_OK;
+}
+
+int PS4_SYSV_ABI Func_A0044BAF471AF4DF(s32 handle, bool* pOut) {
+    LOG_INFO(Lib_Pad, "called handle={}, pOut={}", handle, fmt::ptr(pOut));
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    if (!pOut) {
+        return ORBIS_PAD_ERROR_INVALID_ARG;
+    }
+    auto it = handle_to_controller_map.find(handle);
+    if (it == handle_to_controller_map.end()) {
+        return ORBIS_PAD_ERROR_INVALID_HANDLE;
+    }
+    *pOut = true;
+    return ORBIS_OK;
+}
+
+int PS4_SYSV_ABI Func_12F9CAA61BFAB80D(u64 arg) {
+    LOG_INFO(Lib_Pad, "called arg=0x{:x}", arg);
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    return ORBIS_OK;
+}
+
+int PS4_SYSV_ABI Func_A394264D87022C0A(s32 handle, bool* pOut) {
+    LOG_INFO(Lib_Pad, "called handle={}, pOut={}", handle, fmt::ptr(pOut));
+    if (!g_initialized) {
+        return ORBIS_PAD_ERROR_NOT_INITIALIZED;
+    }
+    if (!pOut || handle == 0) {
+        return ORBIS_PAD_ERROR_INVALID_ARG;
+    }
+    *pOut = false;
     return ORBIS_OK;
 }
 
@@ -842,9 +930,13 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("LKXfw7VJYqg", "libScePad", 1, "libScePad", scePadVirtualDeviceGetRemoteSetting);
     LIB_FUNCTION("IWOyO5jKuZg", "libScePad", 1, "libScePad", scePadVirtualDeviceInsertData);
     LIB_FUNCTION("KY0hSB+Uyfo", "libScePad", 1, "libScePad", Func_298D21481F94C9FA);
-    LIB_FUNCTION("UeUUvNOgXKU", "libScePad", 1, "libScePad", Func_51E514BCD3A05CA5);
-    LIB_FUNCTION("ickjfjk9okM", "libScePad", 1, "libScePad", Func_89C9237E393DA243);
+    LIB_FUNCTION("UeUUvNOgXKU", "libScePad", 1, "libScePad", scePadIsChargingCableConnected);
+    LIB_FUNCTION("ickjfjk9okM", "libScePad", 1, "libScePad", scePadCalculateDeltaTime);
     LIB_FUNCTION("7xA+hFtvBCA", "libScePad", 1, "libScePad", Func_EF103E845B6F0420);
+    LIB_FUNCTION("fCWdlnmB1Ks", "libScePad", 1, "libScePad", scePadIsRemoteController);
+    LIB_FUNCTION("oARLr0ca9N8", "libScePad", 1, "libScePad", Func_A0044BAF471AF4DF);
+    LIB_FUNCTION("EvnKphv6uA0", "libScePad", 1, "libScePad", Func_12F9CAA61BFAB80D);
+    LIB_FUNCTION("o5QmTYcCLAo", "libScePad", 1, "libScePad", Func_A394264D87022C0A);
 };
 
 } // namespace Libraries::Pad
