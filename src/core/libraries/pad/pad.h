@@ -329,6 +329,7 @@ int PS4_SYSV_ABI scePadResetLightBarAll();
 int PS4_SYSV_ABI scePadResetLightBarAllByPortType();
 int PS4_SYSV_ABI scePadResetOrientation(s32 handle);
 int PS4_SYSV_ABI scePadResetOrientationForTracker();
+int PS4_SYSV_ABI scePadSetAngularVelocityBiasCorrectionState(s32 handle, bool bEnable);
 int PS4_SYSV_ABI scePadSetAngularVelocityDeadbandState(s32 handle, bool bEnable);
 int PS4_SYSV_ABI scePadSetAutoPowerOffCount();
 int PS4_SYSV_ABI scePadSetButtonRemappingInfo();
@@ -362,10 +363,14 @@ int PS4_SYSV_ABI scePadVirtualDeviceDisableButtonRemapping();
 int PS4_SYSV_ABI scePadVirtualDeviceGetRemoteSetting();
 int PS4_SYSV_ABI scePadVirtualDeviceInsertData();
 int PS4_SYSV_ABI Func_28B998C7D8A3DA1D();
-int PS4_SYSV_ABI Func_298D21481F94C9FA();
-int PS4_SYSV_ABI Func_51E514BCD3A05CA5();
-int PS4_SYSV_ABI Func_89C9237E393DA243();
-int PS4_SYSV_ABI Func_EF103E845B6F0420();
+int PS4_SYSV_ABI Func_298D21481F94C9FA(u32 mask);
+int PS4_SYSV_ABI scePadIsChargingCableConnected(s32 handle);
+int PS4_SYSV_ABI scePadCalculateDeltaTime(s32 handle, u16 time1, u16 time2, float* pDeltaTime);
+int PS4_SYSV_ABI Func_EF103E845B6F0420(s32 handle, u32 value);
+int PS4_SYSV_ABI scePadIsRemoteController(s32 handle, bool* pOut);
+int PS4_SYSV_ABI Func_A0044BAF471AF4DF(s32 handle, bool* pOut);
+int PS4_SYSV_ABI Func_12F9CAA61BFAB80D(u64 arg);
+int PS4_SYSV_ABI Func_A394264D87022C0A(s32 handle, bool* pOut);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Pad
