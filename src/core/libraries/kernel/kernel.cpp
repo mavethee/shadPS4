@@ -11,6 +11,7 @@
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
 #include "common/va_ctx.h"
+#include "core/cpu_patches.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/coredump/coredump.h"
@@ -462,6 +463,152 @@ u64 PS4_SYSV_ABI posix_sysconf(s32 name) {
     }
 }
 
+static u64 s_machdep_tsc_freq = 1'594'000'000ULL;
+static s32 s_dev_cpu_0_freq = 1594;
+static s32 s_kern_neomode = 0;
+static s32 s_base_ps4_mode = 1;
+
+static s32 CopyOutSysctl(void* oldp, size_t* oldlenp, const void* src, size_t src_len) {
+    if (oldlenp == nullptr) {
+        return 0;
+    }
+    if (oldp != nullptr) {
+        const size_t copy_len = std::min(*oldlenp, src_len);
+        std::memcpy(oldp, src, copy_len);
+    }
+    *oldlenp = src_len;
+    return 0;
+}
+
+s32 PS4_SYSV_ABI posix_sysctlbyname(const char* name, void* oldp, size_t* oldlenp, const void* newp,
+                                    size_t newlen) {
+    if (name == nullptr) {
+        SetPosixErrno(EFAULT);
+        return -1;
+    }
+
+    const std::string_view name_view{name};
+
+    if (name_view == "machdep.tsc_freq") {
+        if (newp != nullptr && newlen >= sizeof(u64)) {
+            std::memcpy(&s_machdep_tsc_freq, newp, sizeof(u64));
+            Core::UpdateGuestTscMultiplier();
+        }
+        return CopyOutSysctl(oldp, oldlenp, &s_machdep_tsc_freq, sizeof(s_machdep_tsc_freq));
+    }
+
+    if (name_view == "dev.cpu.0.freq") {
+        if (newp != nullptr && newlen >= sizeof(s32)) {
+            std::memcpy(&s_dev_cpu_0_freq, newp, sizeof(s32));
+            s_machdep_tsc_freq = static_cast<u64>(s_dev_cpu_0_freq) * 1'000'000ULL;
+            Core::UpdateGuestTscMultiplier();
+        }
+        return CopyOutSysctl(oldp, oldlenp, &s_dev_cpu_0_freq, sizeof(s_dev_cpu_0_freq));
+    }
+
+    if (name_view == "kern.proc.ptc") {
+        const u64 ptc = Dev::GetInitialPtc();
+        return CopyOutSysctl(oldp, oldlenp, &ptc, sizeof(ptc));
+    }
+
+    if (name_view == "kern.neomode") {
+        return CopyOutSysctl(oldp, oldlenp, &s_kern_neomode, sizeof(s_kern_neomode));
+    }
+
+    if (name_view == "machdep.bootparams.base_ps4_mode") {
+        return CopyOutSysctl(oldp, oldlenp, &s_base_ps4_mode, sizeof(s_base_ps4_mode));
+    }
+
+    if (name_view == "hw.model") {
+        static constexpr char model[] = "PlayStation 4";
+        return CopyOutSysctl(oldp, oldlenp, model, sizeof(model));
+    }
+
+    if (name_view == "hw.ncpu") {
+        static constexpr s32 ncpu = 8;
+        return CopyOutSysctl(oldp, oldlenp, &ncpu, sizeof(ncpu));
+    }
+
+    if (name_view == "hw.pagesize") {
+        static constexpr s32 pagesize = 16384;
+        return CopyOutSysctl(oldp, oldlenp, &pagesize, sizeof(pagesize));
+    }
+
+    if (name_view == "hw.physmem") {
+        static constexpr u64 physmem = 8ULL * 1024 * 1024 * 1024;
+        return CopyOutSysctl(oldp, oldlenp, &physmem, sizeof(physmem));
+    }
+
+    if (name_view == "hw.usermem") {
+        static constexpr u64 usermem = 5ULL * 1024 * 1024 * 1024;
+        return CopyOutSysctl(oldp, oldlenp, &usermem, sizeof(usermem));
+    }
+
+    LOG_WARNING(Lib_Kernel, "sysctlbyname: unknown name '{}'", name);
+    SetPosixErrno(ENOENT);
+    return -1;
+}
+
+static const std::unordered_map<std::string_view, s32> s_sysctl_name_to_mib = {
+    {"machdep.tsc_freq", 1},
+    {"dev.cpu.0.freq", 2},
+    {"kern.proc.ptc", 3},
+    {"kern.neomode", 4},
+    {"machdep.bootparams.base_ps4_mode", 5},
+    {"hw.model", 6},
+    {"hw.ncpu", 7},
+    {"hw.pagesize", 8},
+    {"hw.physmem", 9},
+    {"hw.usermem", 10},
+};
+
+static const std::unordered_map<s32, const char*> s_sysctl_mib_to_name = {
+    {1, "machdep.tsc_freq"},
+    {2, "dev.cpu.0.freq"},
+    {3, "kern.proc.ptc"},
+    {4, "kern.neomode"},
+    {5, "machdep.bootparams.base_ps4_mode"},
+    {6, "hw.model"},
+    {7, "hw.ncpu"},
+    {8, "hw.pagesize"},
+    {9, "hw.physmem"},
+    {10, "hw.usermem"},
+};
+
+s32 PS4_SYSV_ABI posix_sysctlnametomib(const char* name, s32* mibp, size_t* sizep) {
+    if (name == nullptr || mibp == nullptr || sizep == nullptr) {
+        SetPosixErrno(EFAULT);
+        return -1;
+    }
+    if (*sizep < 1) {
+        SetPosixErrno(ENOMEM);
+        return -1;
+    }
+    const auto it = s_sysctl_name_to_mib.find(name);
+    if (it != s_sysctl_name_to_mib.end()) {
+        mibp[0] = it->second;
+        *sizep = 1;
+        return 0;
+    }
+    SetPosixErrno(ENOENT);
+    return -1;
+}
+
+s32 PS4_SYSV_ABI posix_sysctl(const s32* name, u32 namelen, void* oldp, size_t* oldlenp,
+                              const void* newp, size_t newlen) {
+    if (name == nullptr || namelen < 1) {
+        SetPosixErrno(EINVAL);
+        return -1;
+    }
+    const auto it = s_sysctl_mib_to_name.find(name[0]);
+    if (it != s_sysctl_mib_to_name.end()) {
+        return posix_sysctlbyname(it->second, oldp, oldlenp, newp, newlen);
+    }
+    LOG_WARNING(Lib_Kernel, "sysctl: unhandled MIB name[0]={}", name[0]);
+    SetPosixErrno(ENOENT);
+    return -1;
+}
+
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     service_thread = std::jthread{KernelServiceThread};
 
@@ -507,6 +654,12 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
 
     LIB_FUNCTION("mkawd0NA9ts", "libkernel", 1, "libkernel", posix_sysconf);
     LIB_FUNCTION("mkawd0NA9ts", "libScePosix", 1, "libkernel", posix_sysconf);
+
+    LIB_FUNCTION("MhC53TKmjVA", "libkernel", 1, "libkernel", posix_sysctlbyname);
+    LIB_FUNCTION("lZG-WlKxRqQ", "libScePosix", 1, "libkernel", posix_sysctlbyname);
+    LIB_FUNCTION("DFmMT80xcNI", "libkernel", 1, "libkernel", posix_sysctl);
+    LIB_FUNCTION("ul57hvm6mBc", "libScePosix", 1, "libkernel", posix_sysctl);
+    LIB_FUNCTION("UkEV4hvMo1E", "libkernel", 1, "libkernel", posix_sysctlnametomib);
 
     // network
     LIB_FUNCTION("XVL8So3QJUk", "libkernel", 1, "libkernel", Libraries::Net::sys_connect);

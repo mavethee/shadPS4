@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -24,10 +24,13 @@
 #include "common/arch.h"
 #include "common/assert.h"
 #include "common/decoder.h"
+#include "common/native_clock.h"
 #include "common/signal_context.h"
 #include "common/types.h"
+#include "core/libraries/kernel/time.h"
 #include "core/signals.h"
 #include "core/tls.h"
+#include "core/tsc_patches.h"
 #include "cpu_patches.h"
 
 #ifdef _WIN32
@@ -983,13 +986,16 @@ struct PatchModule {
     /// Code generator for writing trampoline patches.
     Xbyak::CodeGenerator trampoline_gen;
 
+    /// Size of the trampoline area trampoline_gen writes into.
+    u64 trampoline_capacity;
+
     /// Prevents repeated generation attempts after the fixed trampoline area is exhausted.
     bool trampoline_exhausted{};
 
     PatchModule(u8* module_ptr, const u64 module_size, u8* trampoline_ptr,
                 const u64 trampoline_size)
         : start(module_ptr), end(module_ptr + module_size), patch_gen(module_size, module_ptr),
-          trampoline_gen(trampoline_size, trampoline_ptr) {}
+          trampoline_gen(trampoline_size, trampoline_ptr), trampoline_capacity(trampoline_size) {}
 };
 static std::map<u64, PatchModule> modules;
 
@@ -1327,6 +1333,75 @@ static void TryPatchAot(void* code_address, u64 code_size) {
     const auto* end = code + code_size;
     while (code < end) {
         code += TryPatch(code, module, false).second;
+    }
+}
+
+static u64 s_guest_tsc_multiplier = u64{1} << 32;
+
+void UpdateGuestTscMultiplier() {
+    const u64 guest_freq = Libraries::Kernel::sceKernelGetTscFrequency();
+    const u64 host_freq = Common::NativeClock{}.GetTscFrequency();
+    if (host_freq != 0 && guest_freq != 0) {
+        const long double ratio =
+            static_cast<long double>(guest_freq) / static_cast<long double>(host_freq);
+        s_guest_tsc_multiplier = static_cast<u64>(ratio * 4294967296.0L);
+    } else {
+        s_guest_tsc_multiplier = u64{1} << 32;
+    }
+}
+
+const u64* GetGuestTscMultiplierPtr() {
+    static std::once_flag flag;
+    std::call_once(flag, [] { UpdateGuestTscMultiplier(); });
+    return &s_guest_tsc_multiplier;
+}
+
+u64 GetGuestTscMultiplier() {
+    return *GetGuestTscMultiplierPtr();
+}
+
+static bool VetoRdtscWindowInstruction(const u8* code, u64 length) {
+    ZydisDecodedInstruction instruction;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+            instruction, operands, const_cast<u8*>(code), length))) {
+        return true;
+    }
+    if (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT_FS) {
+        return true;
+    }
+    if (const auto it = Patches.find(instruction.mnemonic); it != Patches.end()) {
+        for (const auto& patch_info : it->second) {
+            if (patch_info.filter(operands)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void PatchGuestRdtsc(u8* code, u64 code_size) {
+    auto* module = GetModule(code);
+    if (module == nullptr) {
+        return;
+    }
+
+    std::unique_lock lock{module->mutex};
+    auto& trampoline_gen = module->trampoline_gen;
+    u64 used = trampoline_gen.getSize();
+    std::vector<u64> skipped;
+    const auto report = PatchRdtscInSegment(
+        code, code_size, const_cast<u8*>(trampoline_gen.getCode()), module->trampoline_capacity,
+        &used, GetGuestTscMultiplierPtr(), VetoRdtscWindowInstruction, &skipped);
+    trampoline_gen.setSize(used);
+
+    if (report.found == 0) {
+        return;
+    }
+    LOG_INFO(Core, "Guest TSC: {} rdtsc at {}: {} patched, {} merged, {} skipped", report.found,
+             fmt::ptr(code), report.windows, report.moved, report.skipped);
+    for (const u64 offset : skipped) {
+        LOG_WARNING(Core, "Guest TSC: rdtsc at {} left unpatched", fmt::ptr(code + offset));
     }
 }
 
@@ -2719,6 +2794,7 @@ void PrePatchInstructions(u64 segment_addr, u64 segment_size) {
         TryPatchAot(reinterpret_cast<void*>(segment_addr), segment_size);
     }
 #endif
+    PatchGuestRdtsc(reinterpret_cast<u8*>(segment_addr), segment_size);
 }
 
 } // namespace Core
