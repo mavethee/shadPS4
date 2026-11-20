@@ -108,10 +108,12 @@ jobs:
 
       - name: Install LLVM 22 (Windows)
         if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "22"
-          cached: true
+        run: |
+          Remove-Item -Recurse -Force "$env:ProgramFiles\LLVM" -ErrorAction SilentlyContinue
+          curl -sSL -o "$env:TEMP\llvm-installer.exe" https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe
+          Start-Process -FilePath "$env:TEMP\llvm-installer.exe" -ArgumentList '/S' -Wait
+          clang-cl --version
+        shell: pwsh
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -165,10 +167,12 @@ jobs:
         submodules: recursive
 
     - name: Install LLVM 22
-      uses: KyleMayes/install-llvm-action@v2
-      with:
-        version: "22"
-        cached: true
+      run: |
+        Remove-Item -Recurse -Force "$env:ProgramFiles\LLVM" -ErrorAction SilentlyContinue
+        curl -sSL -o "$env:TEMP\llvm-installer.exe" https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe
+        Start-Process -FilePath "$env:TEMP\llvm-installer.exe" -ArgumentList '/S' -Wait
+        clang-cl --version
+      shell: pwsh
 
     - name: Cache CMake Build
       uses: hendrikmuhs/ccache-action@v1.2.21
