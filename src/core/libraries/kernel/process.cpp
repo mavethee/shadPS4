@@ -138,7 +138,14 @@ s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, 
 
 s32 PS4_SYSV_ABI sceKernelStopUnloadModule(s32 handle, u64 args, const void* argp, u32 flags,
                                            const void* pOpt, s32* pRes) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) handle = {:#x}", handle);
+    if (handle == 0 || flags != 0 || pOpt != nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
+    if (linker == nullptr || linker->GetModule(handle) == nullptr) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    LOG_WARNING(Lib_Kernel, "(STUBBED) handle = {:#x}", handle);
     if (pRes) {
         *pRes = 0;
     }
@@ -329,15 +336,41 @@ s32 PS4_SYSV_ABI exit(s32 status) {
     return 0;
 }
 
-s32 PS4_SYSV_ABI sceKernelSetProcessProperty(u32 prop_type, const void* prop_data, size_t prop_size,
-                                             u64 unk1, u64 unk2) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) type = {:#x}, size = {}", prop_type, prop_size);
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceKernelSetProcessProperty(const char* prop_name, u64 unk1, u64 unk2, u64 unk3,
+                                             u64 unk4) {
+    if (prop_name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    LOG_WARNING(Lib_Kernel, "(STUBBED) prop = '{}'", prop_name);
+    // Non-devkit processes lack mdbg_service privileges and return 0x8001ffff.
+    return static_cast<s32>(0x8001ffff);
+}
+
+s32 PS4_SYSV_ABI sceKernelGetProcessName(s32 pid, char* name) {
+    if (pid < 0 || pid >= 100000) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    if (name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    return ORBIS_KERNEL_ERROR_ESRCH;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetThreadName(s32 tid, char* name) {
+    if (tid <= 99999) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    if (name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    return ORBIS_KERNEL_ERROR_ESRCH;
 }
 
 void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("-W4xI5aVI8w", "libkernel", 1, "libkernel", sceKernelSetProcessProperty);
     LIB_FUNCTION("-W4xI5aVI8w", "libkernel_psmkit", 1, "libkernel", sceKernelSetProcessProperty);
+    LIB_FUNCTION("fUJRLEbJOuQ", "libkernel", 1, "libkernel", sceKernelGetProcessName);
+    LIB_FUNCTION("4vkZwDJbMx0", "libkernel", 1, "libkernel", sceKernelGetThreadName);
     LIB_FUNCTION("xeu-pV8wkKs", "libkernel", 1, "libkernel", sceKernelIsInSandbox);
     LIB_FUNCTION("WB66evu8bsU", "libkernel", 1, "libkernel", sceKernelGetCompiledSdkVersion);
     LIB_FUNCTION("WslcK1FQcGI", "libkernel", 1, "libkernel", sceKernelIsNeoMode);

@@ -289,7 +289,7 @@ s32 PS4_SYSV_ABI get_authinfo(s32 pid, AuthInfoData* p2) {
 s32 PS4_SYSV_ABI sceKernelGetAppInfo(s32 pid, OrbisKernelAppInfo* app_info) {
     LOG_WARNING(Lib_Kernel, "(STUBBED) called, pid: {}", pid);
     if (pid != GLOBAL_PID) {
-        return ORBIS_KERNEL_ERROR_EPERM;
+        return ORBIS_KERNEL_ERROR_ESRCH;
     }
     if (app_info == nullptr) {
         return ORBIS_OK;
@@ -297,14 +297,15 @@ s32 PS4_SYSV_ABI sceKernelGetAppInfo(s32 pid, OrbisKernelAppInfo* app_info) {
 
     auto& game_info = Common::ElfInfo::Instance();
     *app_info = {};
+    app_info->app_id = 1;
     app_info->has_param_sfo = 1;
     strncpy(app_info->cusa_name, game_info.GameSerial().data(), 10);
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* tw, s32 bit,
+s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* tw, u32 bit,
                                                    s32* result) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) called, bit {:#x}", bit);
+    LOG_TRACE(Lib_Kernel, "called, bit {:#x}", bit);
     if (!tw || !result) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
@@ -316,6 +317,14 @@ s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* t
 
     // Straight from decompilation, most uses rely on workaround data from sceKernelGetAppInfo.
     *result = ((tw->ids[bit >> 6] >> (bit & 0x3f)) & 1);
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetIpcPath(const char* name, char* out_path) {
+    if (name == nullptr || out_path == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    std::snprintf(out_path, 44, "/system_tmp/%.31s", name);
     return ORBIS_OK;
 }
 
@@ -807,6 +816,7 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("igMefp4SAv0", "libkernel", 1, "libkernel", get_authinfo);
     LIB_FUNCTION("G-MYv5erXaU", "libkernel", 1, "libkernel", sceKernelGetAppInfo);
     LIB_FUNCTION("1yca4VvfcNA", "libkernel", 1, "libkernel", sceKernelTitleWorkaroundIsEnabled);
+    LIB_FUNCTION("ePRSOZsroIQ", "libkernel", 1, "libkernel", sceKernelGetIpcPath);
     LIB_FUNCTION("+g+UP8Pyfmo", "libkernel", 1, "libkernel", sceKernelGetProcessType);
     LIB_FUNCTION("PfccT7qURYE", "libkernel", 1, "libkernel", kernel_ioctl);
     LIB_FUNCTION("wW+k21cmbwQ", "libkernel", 1, "libkernel", kernel_ioctl);

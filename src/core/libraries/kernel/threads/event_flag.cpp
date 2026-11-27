@@ -303,14 +303,17 @@ int PS4_SYSV_ABI sceKernelDeleteEventFlag(OrbisKernelEventFlag ef) {
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceKernelOpenEventFlag() {
-    LOG_ERROR(Kernel_Event, "(STUBBED) called");
-    return ORBIS_OK;
+int PS4_SYSV_ABI sceKernelOpenEventFlag(OrbisKernelEventFlag* ef, const char* name) {
+    if (ef == nullptr || name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    LOG_ERROR(Kernel_Event, "(STUBBED) called, name = {}", name);
+    return ORBIS_KERNEL_ERROR_ESRCH;
 }
 
-int PS4_SYSV_ABI sceKernelCloseEventFlag() {
+int PS4_SYSV_ABI sceKernelCloseEventFlag(OrbisKernelEventFlag ef) {
     LOG_ERROR(Kernel_Event, "(STUBBED) called");
-    return ORBIS_OK;
+    return ORBIS_KERNEL_ERROR_ESRCH;
 }
 
 int PS4_SYSV_ABI sceKernelClearEventFlag(OrbisKernelEventFlag ef, u64 bitPattern) {
