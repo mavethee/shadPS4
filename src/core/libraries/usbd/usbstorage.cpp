@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
-#include <cctype>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "common/alignment.h"
 #include "common/logging/log.h"
 #include "common/path_util.h"
+#include "common/singleton.h"
+#include "core/file_sys/fs.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
 #include "usbstorage.h"
@@ -24,11 +29,15 @@ namespace Libraries::UsbStorage {
 constexpr s32 ORBIS_AUTO_MOUNTER_ERROR_INVAL = static_cast<s32>(0x80f40002);
 constexpr s32 ORBIS_AUTO_MOUNTER_ERROR_NOENT = static_cast<s32>(0x80f40004);
 constexpr s32 ORBIS_AUTO_MOUNTER_ERROR_NOTSUP = static_cast<s32>(0x80f40005);
+constexpr s32 ORBIS_AUTO_MOUNTER_ERROR_NO_DEVICE = static_cast<s32>(0x80f40007);
+constexpr s32 ORBIS_AUTO_MOUNTER_ERROR_EXCEED_LIMIT = static_cast<s32>(0x80f40015);
 
 // Flags for OrbisUsbStorageDeviceInfo additional_features
 constexpr u64 ORBIS_USB_STORAGE_FEATURE_READ_ONLY = 1ull << 4;
 constexpr u64 ORBIS_USB_STORAGE_FEATURE_FAT = 1ull << 6;
 constexpr u64 ORBIS_USB_STORAGE_FEATURE_EXFAT = 1ull << 7;
+constexpr u64 ORBIS_USB_STORAGE_OPTION_LONG_ID = 1ull << 3;
+constexpr size_t MAX_ACTIVE_USB_MAPS = 4;
 
 struct OrbisUsbStorageDeviceInfo {
     u64 capacity;            // +0x00
@@ -79,9 +88,104 @@ struct UsbGetdentsState {
     size_t current_index = 0;
 };
 
+struct UsbMapItem {
+    u32 device_id = 0;
+    std::string directory;
+    std::string mount_point;
+};
+
+struct UsbCallbackEntry {
+    s32 event_type = 0;
+    void* callback = nullptr;
+    void* arg = nullptr;
+};
+
+struct UsbDirCallbackEntry {
+    u32 device_id = 0;
+    std::string directory;
+    void* callback = nullptr;
+    void* arg = nullptr;
+};
+
 static std::mutex g_usb_getdents_mutex;
 static std::unordered_map<s32, UsbGetdentsState> g_usb_getdents_table;
 static s32 g_usb_next_fd = 1;
+
+static std::mutex g_usb_state_mutex;
+static std::vector<UsbMapItem> g_usb_maps;
+static std::vector<UsbCallbackEntry> g_usb_callbacks;
+static std::vector<UsbDirCallbackEntry> g_usb_avail_callbacks;
+static std::vector<UsbDirCallbackEntry> g_usb_unavail_callbacks;
+
+static bool IsValidUsbSubpath(std::string_view dir) {
+    return !dir.empty() && dir.starts_with('/') && dir.find("..") == std::string_view::npos &&
+           dir.find("//") == std::string_view::npos;
+}
+
+static std::string BuildUsbMountPoint(u32 device_id, std::string_view directory, u64 option_flags) {
+    std::string mount_point = (option_flags & ORBIS_USB_STORAGE_OPTION_LONG_ID) != 0
+                                  ? fmt::format("/usb{:08x}", device_id)
+                                  : fmt::format("/usb{:02d}", device_id);
+    std::string suffix{directory};
+    std::replace(suffix.begin(), suffix.end(), '/', '_');
+    mount_point += suffix;
+    return mount_point;
+}
+
+static std::filesystem::path ResolveUsbSubpath(const std::filesystem::path& root,
+                                               std::string_view directory) {
+    std::string_view rel = directory;
+    if (rel.starts_with('/')) {
+        rel.remove_prefix(1);
+    }
+    return rel.empty() ? root : (root / rel);
+}
+
+static std::optional<std::filesystem::path> ResolveUsbDeviceRoot(u32 device_id) {
+    if (device_id != 0) {
+        return std::nullopt;
+    }
+    const auto usb_root = GetUsbMountPath(device_id);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(usb_root, ec)) {
+        return std::nullopt;
+    }
+    return usb_root;
+}
+
+static s32 RegisterDirCallback(std::vector<UsbDirCallbackEntry>& list, u32 device_id,
+                               const char* directory, void* callback, void* arg) {
+    if (!directory || !callback) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    std::scoped_lock lock(g_usb_state_mutex);
+    const auto it = std::find_if(list.begin(), list.end(), [&](const UsbDirCallbackEntry& entry) {
+        return entry.device_id == device_id && entry.directory == directory &&
+               entry.callback == callback;
+    });
+    if (it != list.end()) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    list.push_back({device_id, directory, callback, arg});
+    return ORBIS_OK;
+}
+
+static s32 UnregisterDirCallback(std::vector<UsbDirCallbackEntry>& list, u32 device_id,
+                                 const char* directory, void* callback) {
+    if (!directory || !callback) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    std::scoped_lock lock(g_usb_state_mutex);
+    const auto it = std::find_if(list.begin(), list.end(), [&](const UsbDirCallbackEntry& entry) {
+        return entry.device_id == device_id && entry.directory == directory &&
+               entry.callback == callback;
+    });
+    if (it == list.end()) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    list.erase(it);
+    return ORBIS_OK;
+}
 
 std::filesystem::path GetUsbMountPath(u32 device_id) {
     return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "mnt" /
@@ -94,83 +198,86 @@ static s32 PS4_SYSV_ABI sceUsbStorageInit(void* attr) {
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageTerm() {
+    std::vector<std::string> mounts_to_unmount;
+    {
+        std::scoped_lock lock(g_usb_state_mutex);
+        for (const auto& item : g_usb_maps) {
+            mounts_to_unmount.push_back(item.mount_point);
+        }
+        g_usb_maps.clear();
+        g_usb_callbacks.clear();
+        g_usb_avail_callbacks.clear();
+        g_usb_unavail_callbacks.clear();
+    }
+    if (auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance()) {
+        for (const auto& mp : mounts_to_unmount) {
+            mnt->Unmount(mp);
+        }
+    }
     LOG_DEBUG(Lib_Usbd, "called");
     return ORBIS_OK;
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageRegisterCallback(s32 event_type, void* callback, void* arg) {
     if (!callback) {
-        LOG_ERROR(Lib_Usbd, "callback is nullptr");
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
     if (event_type != 1 && event_type != 2) {
-        LOG_ERROR(Lib_Usbd, "event_type {} is invalid", event_type);
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: event_type = {}, callback = {}, arg = {}", event_type,
-              callback, arg);
+    std::scoped_lock lock(g_usb_state_mutex);
+    const auto it = std::find_if(g_usb_callbacks.begin(), g_usb_callbacks.end(),
+                                 [&](const UsbCallbackEntry& e) {
+                                     return e.event_type == event_type && e.callback == callback;
+                                 });
+    if (it != g_usb_callbacks.end()) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    g_usb_callbacks.push_back({event_type, callback, arg});
     return ORBIS_OK;
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageUnregisterCallback(s32 event_type, void* callback) {
     if (!callback) {
-        LOG_ERROR(Lib_Usbd, "callback is nullptr");
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
     if (event_type != 1 && event_type != 2) {
-        LOG_ERROR(Lib_Usbd, "event_type {} is invalid", event_type);
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: event_type = {}, callback = {}", event_type, callback);
+    std::scoped_lock lock(g_usb_state_mutex);
+    const auto it = std::find_if(g_usb_callbacks.begin(), g_usb_callbacks.end(),
+                                 [&](const UsbCallbackEntry& e) {
+                                     return e.event_type == event_type && e.callback == callback;
+                                 });
+    if (it == g_usb_callbacks.end()) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+    g_usb_callbacks.erase(it);
     return ORBIS_OK;
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageRegisterCallbackForMapAvailable(u32 device_id,
                                                                      const char* directory,
                                                                      void* callback, void* arg) {
-    if (!directory || !callback) {
-        LOG_ERROR(Lib_Usbd, "directory or callback is null");
-        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
-    }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: device_id = {}, directory = {}, callback = {}, arg = {}",
-              device_id, directory, callback, arg);
-    return ORBIS_OK;
+    return RegisterDirCallback(g_usb_avail_callbacks, device_id, directory, callback, arg);
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageUnregisterCallbackForMapAvailable(u32 device_id,
                                                                        const char* directory,
                                                                        void* callback) {
-    if (!directory || !callback) {
-        LOG_ERROR(Lib_Usbd, "directory or callback is null");
-        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
-    }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: device_id = {}, directory = {}, callback = {}",
-              device_id, directory, callback);
-    return ORBIS_OK;
+    return UnregisterDirCallback(g_usb_avail_callbacks, device_id, directory, callback);
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageRegisterCallbackForMapUnavailable(u32 device_id,
                                                                        const char* directory,
                                                                        void* callback, void* arg) {
-    if (!directory || !callback) {
-        LOG_ERROR(Lib_Usbd, "directory or callback is null");
-        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
-    }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: device_id = {}, directory = {}, callback = {}, arg = {}",
-              device_id, directory, callback, arg);
-    return ORBIS_OK;
+    return RegisterDirCallback(g_usb_unavail_callbacks, device_id, directory, callback, arg);
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageUnregisterCallbackForMapUnavailable(u32 device_id,
                                                                          const char* directory,
                                                                          void* callback) {
-    if (!directory || !callback) {
-        LOG_ERROR(Lib_Usbd, "directory or callback is null");
-        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
-    }
-    LOG_ERROR(Lib_Usbd, "(STUBBED) called: device_id = {}, directory = {}, callback = {}",
-              device_id, directory, callback);
-    return ORBIS_OK;
+    return UnregisterDirCallback(g_usb_unavail_callbacks, device_id, directory, callback);
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageGetDeviceList(u32* device_ids, u32* count) {
@@ -179,11 +286,7 @@ static s32 PS4_SYSV_ABI sceUsbStorageGetDeviceList(u32* device_ids, u32* count) 
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
 
-    const auto usb_path = GetUsbMountPath(0);
-    std::error_code ec;
-    const bool usb_exists = std::filesystem::exists(usb_path, ec);
-
-    if (!usb_exists) {
+    if (!ResolveUsbDeviceRoot(0)) {
         *count = 0;
         LOG_DEBUG(Lib_Usbd, "no USB devices found");
         return ORBIS_OK;
@@ -200,19 +303,14 @@ static s32 PS4_SYSV_ABI sceUsbStorageGetDeviceInfo(u32 device_id, OrbisUsbStorag
         LOG_ERROR(Lib_Usbd, "info pointer is null");
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
-    if (device_id != 0) {
-        LOG_ERROR(Lib_Usbd, "invalid device_id {}", device_id);
-        return ORBIS_AUTO_MOUNTER_ERROR_NOENT;
-    }
-
-    const auto usb_path = GetUsbMountPath(device_id);
-    std::error_code ec;
-    if (!std::filesystem::exists(usb_path, ec)) {
+    const auto usb_path = ResolveUsbDeviceRoot(device_id);
+    if (!usb_path) {
         LOG_ERROR(Lib_Usbd, "USB device {} mount path does not exist", device_id);
         return ORBIS_AUTO_MOUNTER_ERROR_NOENT;
     }
 
-    const auto space = std::filesystem::space(usb_path, ec);
+    std::error_code ec;
+    const auto space = std::filesystem::space(*usb_path, ec);
     if (ec) {
         LOG_ERROR(Lib_Usbd, "Could not get free space of USB device {} mount path: {}", device_id,
                   ec.message());
@@ -242,55 +340,114 @@ static s32 PS4_SYSV_ABI sceUsbStorageGetDeviceInfo(u32 device_id, OrbisUsbStorag
     return ORBIS_OK;
 }
 
-static s32 PS4_SYSV_ABI sceUsbStorageIsExist(u32 device_id) {
-    if (device_id != 0) {
-        return 0;
+static bool PS4_SYSV_ABI sceUsbStorageIsExist(u32 device_id, const char* directory,
+                                              bool* out_exist) {
+    if (!directory || !out_exist) {
+        return false;
+    }
+    if (!IsValidUsbSubpath(directory)) {
+        *out_exist = false;
+        return false;
+    }
+    const auto usb_root = ResolveUsbDeviceRoot(device_id);
+    if (!usb_root) {
+        *out_exist = false;
+        return false;
     }
     std::error_code ec;
-    return std::filesystem::exists(GetUsbMountPath(device_id), ec) ? 1 : 0;
+    const auto target = ResolveUsbSubpath(*usb_root, directory);
+    *out_exist = std::filesystem::exists(target, ec);
+    return true;
 }
 
-static s32 PS4_SYSV_ABI sceUsbStorageRequestMapWSB(u32 device_id, const char* subpath, s32 flags,
-                                                   s32 unk, char* out_mount_path, s32* out_status) {
-    if (device_id != 0) {
-        LOG_ERROR(Lib_Usbd, "invalid device_id {}", device_id);
+static s32 PS4_SYSV_ABI sceUsbStorageRequestMapWSB(u32 device_id, const char* directory,
+                                                   s32 lock_type, u64 option_flags,
+                                                   char* out_mount_path,
+                                                   u64* out_additional_features) {
+    if (!directory || !out_mount_path) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+
+    const auto usb_root = ResolveUsbDeviceRoot(device_id);
+    if (!usb_root) {
+        return ORBIS_AUTO_MOUNTER_ERROR_NO_DEVICE;
+    }
+
+    if (!IsValidUsbSubpath(directory)) {
+        return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
+    }
+
+    std::error_code ec;
+    const auto host_target = ResolveUsbSubpath(*usb_root, directory);
+    if (!std::filesystem::is_directory(host_target, ec)) {
         return ORBIS_AUTO_MOUNTER_ERROR_NOENT;
     }
 
-    std::string mount_path = "/mnt/usb" + std::to_string(device_id);
-    if (subpath && subpath[0] != '\0') {
-        std::string_view sp(subpath);
-        if (sp.starts_with("/mnt/usb")) {
-            mount_path = std::string(sp);
-        } else if (sp.starts_with("/")) {
-            mount_path += std::string(sp);
-        } else {
-            mount_path += "/" + std::string(sp);
+    const std::string mount_point = BuildUsbMountPoint(device_id, directory, option_flags);
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    if (!mnt) {
+        return ORBIS_AUTO_MOUNTER_ERROR_NOENT;
+    }
+
+    {
+        std::scoped_lock lock(g_usb_state_mutex);
+        const bool already_mapped =
+            std::any_of(g_usb_maps.begin(), g_usb_maps.end(), [&](const UsbMapItem& item) {
+                return item.device_id == device_id && item.directory == directory &&
+                       item.mount_point == mount_point;
+            });
+        if (!already_mapped) {
+            if (g_usb_maps.size() >= MAX_ACTIVE_USB_MAPS) {
+                return ORBIS_AUTO_MOUNTER_ERROR_EXCEED_LIMIT;
+            }
+            g_usb_maps.push_back({device_id, directory, mount_point});
         }
     }
 
-    if (out_mount_path) {
-        std::strncpy(out_mount_path, mount_path.c_str(), 127);
-        out_mount_path[127] = '\0';
-    }
-    if (out_status) {
-        *out_status = 0;
+    mnt->Mount(host_target, mount_point, /*read_only=*/false);
+
+    std::strncpy(out_mount_path, mount_point.c_str(), 127);
+    out_mount_path[127] = '\0';
+    if (out_additional_features) {
+        *out_additional_features = ORBIS_USB_STORAGE_FEATURE_EXFAT;
     }
 
-    LOG_INFO(Lib_Usbd, "mapped device_id {} to '{}'", device_id, mount_path);
+    LOG_INFO(Lib_Usbd, "mapped device_id {} subpath '{}' -> '{}' (host '{}')", device_id, directory,
+             mount_point, host_target.string());
     return ORBIS_OK;
 }
 
-static s32 PS4_SYSV_ABI sceUsbStorageRequestMap(u32 device_id, const char* subpath, s32 flags,
-                                                s32 unk, char* out_mount_path, s32* out_status) {
-    return sceUsbStorageRequestMapWSB(device_id, subpath, flags, unk, out_mount_path, out_status);
+static s32 PS4_SYSV_ABI sceUsbStorageRequestMap(u32 device_id, const char* directory, s32 lock_type,
+                                                u64 option_flags, char* out_mount_path,
+                                                u64* out_additional_features) {
+    return sceUsbStorageRequestMapWSB(device_id, directory, lock_type, option_flags, out_mount_path,
+                                      out_additional_features);
 }
 
 static s32 PS4_SYSV_ABI sceUsbStorageRequestUnmap(u32 device_id, const char* directory) {
     if (!directory) {
-        LOG_ERROR(Lib_Usbd, "directory is null");
         return ORBIS_AUTO_MOUNTER_ERROR_INVAL;
     }
+
+    std::vector<std::string> removed_mounts;
+    {
+        std::scoped_lock lock(g_usb_state_mutex);
+        for (auto it = g_usb_maps.begin(); it != g_usb_maps.end();) {
+            if (it->device_id == device_id && it->directory == directory) {
+                removed_mounts.push_back(it->mount_point);
+                it = g_usb_maps.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance()) {
+        for (const auto& mp : removed_mounts) {
+            mnt->Unmount(mp);
+        }
+    }
+
     LOG_INFO(Lib_Usbd, "unmapped device_id {}, directory '{}'", device_id, directory);
     return ORBIS_OK;
 }
@@ -307,8 +464,8 @@ static s32 PS4_SYSV_ABI sceUsbStorageGetdentsOpen(u32 device_id, s32* out_fd, u6
 
     const auto mount_usb_dir = GetUsbMountPath(device_id);
     std::error_code ec;
-    if (!std::filesystem::exists(mount_usb_dir, ec)) {
-        std::filesystem::create_directories(mount_usb_dir, ec);
+    if (!std::filesystem::is_directory(mount_usb_dir, ec)) {
+        return ORBIS_AUTO_MOUNTER_ERROR_NO_DEVICE;
     }
 
     UsbGetdentsState state;

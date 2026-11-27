@@ -33,6 +33,7 @@ extern "C" {
 #include "core/file_sys/fs.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/libs.h"
+#include "core/libraries/usbd/usbstorage.h"
 #include "music_player_service.h"
 
 namespace Libraries::MusicPlayerService {
@@ -545,13 +546,15 @@ private:
             guest_path = std::move(decoded_path);
 
             std::string resolved_guest_path = guest_path;
+            std::filesystem::path usb_fallback_path;
             {
                 std::scoped_lock lock(m_mutex);
                 for (const auto& [serial, device_id] : m_usb_devices) {
                     std::string prefix = "/" + serial + "/";
                     if (guest_path.starts_with(prefix)) {
-                        resolved_guest_path = "/mnt/usb" + std::to_string(device_id) + "/" +
-                                              guest_path.substr(prefix.size());
+                        const std::string rel = guest_path.substr(prefix.size());
+                        resolved_guest_path = "/mnt/usb" + std::to_string(device_id) + "/" + rel;
+                        usb_fallback_path = Libraries::UsbStorage::GetUsbMountPath(device_id) / rel;
                         break;
                     }
                 }
@@ -561,6 +564,10 @@ private:
             std::filesystem::path host_path;
             if (mnt) {
                 host_path = mnt->GetHostPath(resolved_guest_path);
+            }
+            if ((host_path.empty() || !std::filesystem::exists(host_path)) &&
+                !usb_fallback_path.empty() && std::filesystem::exists(usb_fallback_path)) {
+                host_path = usb_fallback_path;
             }
             if (host_path.empty() || !std::filesystem::exists(host_path)) {
                 host_path = resolved_guest_path;
