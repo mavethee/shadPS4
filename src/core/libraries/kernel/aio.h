@@ -39,5 +39,18 @@ struct OrbisKernelAioRWRequest {
     s32 fd;
 };
 
+struct OrbisKernelAioParamQueue {
+    u32 prio_mid;
+    u32 prio_high;
+    u32 enable_split;
+    u32 read_split_size;
+    u32 write_split_size;
+};
+
+struct OrbisKernelAioParam {
+    OrbisKernelAioParamQueue queues[3];
+};
+static_assert(sizeof(OrbisKernelAioParam) == 60);
+
 void RegisterAio(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Kernel
