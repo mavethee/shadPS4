@@ -75,7 +75,7 @@ private:
 
 class HostFsBackend final : public IBackend {
 public:
-    HostFsBackend(std::filesystem::path root, bool read_only);
+    HostFsBackend(std::filesystem::path root, bool read_only, bool case_sensitive = false);
     ~HostFsBackend() override = default;
 
     bool Exists(std::string_view rel_path) override;
@@ -103,9 +103,11 @@ public:
 
 private:
     std::filesystem::path Resolve(std::string_view rel_path) const;
+    bool ExistsWithExactCase(std::string_view rel_path) const;
     std::optional<std::filesystem::path> ResolveCaseInsensitive(std::string_view rel_path) const;
     std::filesystem::path m_root;
     bool m_read_only;
+    bool m_case_sensitive;
     mutable std::mutex m_case_cache_mutex;
     mutable tsl::robin_map<std::string, std::filesystem::path> m_case_cache;
 };

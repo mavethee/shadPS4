@@ -87,10 +87,15 @@ std::optional<std::filesystem::path> ResolveGameRoot(const std::filesystem::path
     return std::nullopt;
 }
 
+bool MntPoints::IsCaseSensitiveGuestMount(std::string_view guest_mount) {
+    return guest_mount == "/data" || guest_mount == "/temp" || guest_mount == "/temp0" ||
+           guest_mount == "/download0";
+}
+
 std::shared_ptr<IBackend> MntPoints::CreateBackend(const std::filesystem::path& host_path,
-                                                   bool read_only) {
+                                                   bool read_only, bool case_sensitive) {
     if (std::filesystem::is_directory(host_path)) {
-        return std::make_shared<HostFsBackend>(host_path, read_only);
+        return std::make_shared<HostFsBackend>(host_path, read_only, case_sensitive);
     }
     const auto try_zar = [](const std::filesystem::path& zar) -> std::shared_ptr<IBackend> {
         if (std::filesystem::is_regular_file(zar) && zar.extension() == ".zar") {
@@ -110,14 +115,17 @@ std::shared_ptr<IBackend> MntPoints::CreateBackend(const std::filesystem::path& 
 }
 
 void MntPoints::Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
-                      bool read_only) {
+                      bool read_only, std::optional<bool> case_sensitive) {
     std::scoped_lock lock{m_mutex};
     const auto guest_folder_sanitized = RemoveTrailingSlashes(guest_folder);
+    const bool is_case_sensitive =
+        case_sensitive.value_or(IsCaseSensitiveGuestMount(guest_folder_sanitized));
     auto it = std::find_if(m_mnt_pairs.begin(), m_mnt_pairs.end(), [&](const MntPair& pair) {
         return pair.mount == guest_folder_sanitized;
     });
     if (it != m_mnt_pairs.end()) {
-        if (it->host_path == host_folder && it->read_only == read_only) {
+        if (it->host_path == host_folder && it->read_only == read_only &&
+            it->case_sensitive == is_case_sensitive) {
             LOG_DEBUG(Kernel_Fs, "Mount point {} already mounted to {}, skipping",
                       guest_folder_sanitized, host_folder.string());
             return;
@@ -132,9 +140,10 @@ void MntPoints::Mount(const std::filesystem::path& host_folder, const std::strin
     const bool eligible_for_overlays =
         guest_folder_sanitized == "/app0" || guest_folder_sanitized == "/hostapp";
 
-    const auto probe_overlay = [this](const std::filesystem::path& base,
-                                      std::string_view suffix) -> std::shared_ptr<IBackend> {
-        return CreateBackend(OverlayPath(base, suffix), /*ro=*/true);
+    const auto probe_overlay =
+        [this, is_case_sensitive](const std::filesystem::path& base,
+                                  std::string_view suffix) -> std::shared_ptr<IBackend> {
+        return CreateBackend(OverlayPath(base, suffix), /*ro=*/true, is_case_sensitive);
     };
     // check for mods , updates,patch
     if (eligible_for_overlays) {
@@ -152,11 +161,12 @@ void MntPoints::Mount(const std::filesystem::path& host_folder, const std::strin
         }
     }
 
-    std::shared_ptr<IBackend> base = CreateBackend(host_folder, read_only);
+    std::shared_ptr<IBackend> base = CreateBackend(host_folder, read_only, is_case_sensitive);
     ASSERT_MSG(base, "Mount: base path does not resolve to a backend: {}", host_folder.string());
     stack.push_back(std::move(base));
 
-    m_mnt_pairs.emplace_back(host_folder, guest_folder_sanitized, read_only, std::move(stack));
+    m_mnt_pairs.emplace_back(host_folder, guest_folder_sanitized, read_only, is_case_sensitive,
+                             std::move(stack));
     // Keep mounts sorted by prefix length in descending order for longest-prefix matching.
     std::stable_sort(
         m_mnt_pairs.begin(), m_mnt_pairs.end(),
@@ -276,7 +286,7 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
         return patch_path;
     }
 
-    if (!NeedsCaseInsensitiveSearch || !host_backed) {
+    if (mount->case_sensitive || !NeedsCaseInsensitiveSearch || !host_backed) {
         return host_path;
     }
 
@@ -440,8 +450,9 @@ void MntPoints::IterateDirectory(std::string_view guest_directory,
     };
 
     std::unordered_set<std::string> emitted;
-    const auto emit_key = [](const std::string& name) {
-        return NeedsCaseInsensitiveSearch ? Common::ToLower(name) : name;
+    const bool use_ci_key = !mount->case_sensitive && NeedsCaseInsensitiveSearch;
+    const auto emit_key = [use_ci_key](const std::string& name) {
+        return use_ci_key ? Common::ToLower(name) : name;
     };
 
     if (auto dir = base_backend->OpenDir(rel)) {
@@ -639,9 +650,9 @@ std::unique_ptr<IDirectory> MntPoints::OpenDir(std::string_view guest_path) {
             }
             std::unordered_set<std::string> layer_seen;
             DirEntry entry;
+            const bool use_ci_key = !mount->case_sensitive && NeedsCaseInsensitiveSearch;
             while (dir->Next(entry)) {
-                const auto key =
-                    NeedsCaseInsensitiveSearch ? Common::ToLower(entry.name) : entry.name;
+                const auto key = use_ci_key ? Common::ToLower(entry.name) : entry.name;
                 if (seen.contains(key)) {
                     continue;
                 }

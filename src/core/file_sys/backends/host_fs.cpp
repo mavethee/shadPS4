@@ -124,8 +124,8 @@ void HostDirectory::Rewind() {
     m_it = std::filesystem::directory_iterator(m_root, ec);
 }
 
-HostFsBackend::HostFsBackend(std::filesystem::path root, bool read_only)
-    : m_root(std::move(root)), m_read_only(read_only) {}
+HostFsBackend::HostFsBackend(std::filesystem::path root, bool read_only, bool case_sensitive)
+    : m_root(std::move(root)), m_read_only(read_only), m_case_sensitive(case_sensitive) {}
 
 std::filesystem::path HostFsBackend::Resolve(std::string_view rel_path) const {
     if (rel_path.empty()) {
@@ -133,15 +133,54 @@ std::filesystem::path HostFsBackend::Resolve(std::string_view rel_path) const {
     }
     std::filesystem::path direct = m_root;
     direct /= rel_path;
-    if constexpr (!NeedsCaseInsensitiveSearch) {
+    if (m_case_sensitive || !NeedsCaseInsensitiveSearch) {
         return direct;
-    } else {
-        std::error_code ec;
-        if (std::filesystem::exists(direct, ec)) {
-            return direct;
-        }
-        return ResolveCaseInsensitive(rel_path).value_or(std::move(direct));
     }
+    std::error_code ec;
+    if (std::filesystem::exists(direct, ec)) {
+        return direct;
+    }
+    return ResolveCaseInsensitive(rel_path).value_or(std::move(direct));
+}
+
+bool HostFsBackend::ExistsWithExactCase(std::string_view rel_path) const {
+    if constexpr (!NeedsCaseInsensitiveSearch) {
+        return true;
+    }
+    std::filesystem::path current = m_root;
+    std::error_code ec;
+    if (rel_path.empty()) {
+        return std::filesystem::exists(current, ec);
+    }
+    for (const auto& part : std::filesystem::path(rel_path)) {
+        const std::string part_str = part.string();
+        if (part_str.empty() || part_str == ".") {
+            continue;
+        }
+        if (part_str == "..") {
+            current /= part_str;
+            if (!std::filesystem::exists(current, ec)) {
+                return false;
+            }
+            continue;
+        }
+        const auto candidate = current / part_str;
+        if (!std::filesystem::exists(candidate, ec)) {
+            return false;
+        }
+        bool exact = false;
+        for (const auto& entry : std::filesystem::directory_iterator(current, ec)) {
+            if (entry.path().filename().string() == part_str) {
+                exact = true;
+                break;
+            }
+        }
+        if (!exact) {
+            return false;
+        }
+        current = candidate;
+    }
+    return true;
 }
 
 std::optional<std::filesystem::path> HostFsBackend::ResolveCaseInsensitive(
@@ -194,16 +233,25 @@ std::optional<std::filesystem::path> HostFsBackend::ResolveCaseInsensitive(
 }
 
 bool HostFsBackend::Exists(std::string_view rel_path) {
+    if (m_case_sensitive && NeedsCaseInsensitiveSearch) {
+        return ExistsWithExactCase(rel_path);
+    }
     std::error_code ec;
     return std::filesystem::exists(Resolve(rel_path), ec);
 }
 
 bool HostFsBackend::IsDirectory(std::string_view rel_path) {
+    if (m_case_sensitive && !ExistsWithExactCase(rel_path)) {
+        return false;
+    }
     std::error_code ec;
     return std::filesystem::is_directory(Resolve(rel_path), ec);
 }
 
 bool HostFsBackend::Stat(std::string_view rel_path, FileStat& out) {
+    if (m_case_sensitive && !ExistsWithExactCase(rel_path)) {
+        return false;
+    }
     const auto info = Common::FS::GetFileInfo(Resolve(rel_path));
     if (!info) {
         return false;
@@ -222,6 +270,10 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
     if (writable && m_read_only) {
         return nullptr;
     }
+    if (mode != Common::FS::FileAccessMode::Create && m_case_sensitive &&
+        !ExistsWithExactCase(rel_path)) {
+        return nullptr;
+    }
     const auto path = Resolve(rel_path);
     std::error_code ec;
     if (mode != Common::FS::FileAccessMode::Create && !std::filesystem::is_regular_file(path, ec)) {
@@ -235,6 +287,9 @@ std::unique_ptr<IFile> HostFsBackend::Open(std::string_view rel_path,
 }
 
 std::unique_ptr<IDirectory> HostFsBackend::OpenDir(std::string_view rel_path) {
+    if (m_case_sensitive && !ExistsWithExactCase(rel_path)) {
+        return nullptr;
+    }
     const auto path = Resolve(rel_path);
     std::error_code ec;
     if (!std::filesystem::is_directory(path, ec)) {
@@ -244,7 +299,10 @@ std::unique_ptr<IDirectory> HostFsBackend::OpenDir(std::string_view rel_path) {
 }
 
 std::optional<std::vector<u8>> HostFsBackend::ReadFile(std::string_view rel_path) const {
-    const std::filesystem::path full_path = m_root / rel_path;
+    if (m_case_sensitive && !ExistsWithExactCase(rel_path)) {
+        return std::nullopt;
+    }
+    const std::filesystem::path full_path = Resolve(rel_path);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(full_path, ec) || ec) {
         return std::nullopt;

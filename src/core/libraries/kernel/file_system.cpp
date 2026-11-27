@@ -1298,6 +1298,8 @@ s32 PS4_SYSV_ABI sceKernelCheckReachability(const char* path) {
     };
     auto resolve_component = [mnt](const std::string& parent_dir, std::string_view comp,
                                    bool require_dir, std::string& out_name) -> bool {
+        const auto* mount = parent_dir.empty() ? nullptr : mnt->GetMount(parent_dir);
+        const bool allow_ci = mount != nullptr && !mount->case_sensitive;
         auto dir = mnt->OpenDir(parent_dir.empty() ? "/" : parent_dir);
         if (!dir) {
             return false;
@@ -1314,14 +1316,14 @@ s32 PS4_SYSV_ABI sceKernelCheckReachability(const char* path) {
                 out_name = entry.name;
                 return true;
             }
-            if (Common::ToLower(entry.name) == lower_comp) {
+            if (allow_ci && Common::ToLower(entry.name) == lower_comp) {
                 ++ci_count;
                 if (ci_count == 1) {
                     ci_entry = entry;
                 }
             }
         }
-        if (ci_count == 1 && (!require_dir || ci_entry.is_directory)) {
+        if (allow_ci && ci_count == 1 && (!require_dir || ci_entry.is_directory)) {
             out_name = ci_entry.name;
             return true;
         }
