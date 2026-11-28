@@ -8,16 +8,18 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "core/libraries/kernel/ipc.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/libs.h"
 #include "pthread.h"
 
 namespace Libraries::Kernel {
 
-constexpr int ORBIS_KERNEL_EVF_ATTR_TH_FIFO = 0x01;
-constexpr int ORBIS_KERNEL_EVF_ATTR_TH_PRIO = 0x02;
-constexpr int ORBIS_KERNEL_EVF_ATTR_SINGLE = 0x10;
-constexpr int ORBIS_KERNEL_EVF_ATTR_MULTI = 0x20;
+constexpr u32 ORBIS_KERNEL_EVF_ATTR_TH_FIFO = 0x01;
+constexpr u32 ORBIS_KERNEL_EVF_ATTR_TH_PRIO = 0x02;
+constexpr u32 ORBIS_KERNEL_EVF_ATTR_SINGLE = 0x10;
+constexpr u32 ORBIS_KERNEL_EVF_ATTR_MULTI = 0x20;
+constexpr u32 ORBIS_KERNEL_EVF_ATTR_OPEN = 0x100;
 
 constexpr int ORBIS_KERNEL_EVF_WAITMODE_AND = 0x01;
 constexpr int ORBIS_KERNEL_EVF_WAITMODE_OR = 0x02;
@@ -240,7 +242,9 @@ private:
 };
 
 using OrbisKernelUseconds = u32;
-using OrbisKernelEventFlag = EventFlagInternal*;
+using OrbisKernelEventFlag = u64;
+
+static NamedKernelRegistry<EventFlagInternal> g_event_flags{0x100};
 
 struct OrbisKernelEventFlagOptParam {
     size_t size;
@@ -249,12 +253,16 @@ struct OrbisKernelEventFlagOptParam {
 int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* pName, u32 attr,
                                           u64 initPattern,
                                           const OrbisKernelEventFlagOptParam* pOptParam) {
-    LOG_TRACE(Kernel_Event, "called name = {} attr = {:#x} initPattern = {:#x}", pName, attr,
-              initPattern);
+    LOG_TRACE(Kernel_Event, "called name = {} attr = {:#x} initPattern = {:#x}",
+              pName ? pName : "null", attr, initPattern);
     if (ef == nullptr || pName == nullptr) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
-    if (pOptParam || attr > (ORBIS_KERNEL_EVF_ATTR_MULTI | ORBIS_KERNEL_EVF_ATTR_TH_PRIO)) {
+    const u32 allowed_mask = ORBIS_KERNEL_EVF_ATTR_TH_FIFO | ORBIS_KERNEL_EVF_ATTR_TH_PRIO |
+                             ORBIS_KERNEL_EVF_ATTR_SINGLE | ORBIS_KERNEL_EVF_ATTR_MULTI |
+                             ORBIS_KERNEL_EVF_ATTR_OPEN;
+    if (pOptParam != nullptr || (attr & ~allowed_mask) != 0 || (attr & 0xfu) > 2 ||
+        (attr & 0xf0u) > ORBIS_KERNEL_EVF_ATTR_MULTI) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
@@ -274,10 +282,10 @@ int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* 
     case 0x00:
         break;
     default:
-        UNREACHABLE();
+        return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    switch (attr & 0xf0) {
+    switch (attr & 0xf0u) {
     case 0x10:
         thread_mode = EventFlagInternal::ThreadMode::Single;
         break;
@@ -287,57 +295,69 @@ int PS4_SYSV_ABI sceKernelCreateEventFlag(OrbisKernelEventFlag* ef, const char* 
     case 0x00:
         break;
     default:
-        UNREACHABLE();
+        return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    *ef = new EventFlagInternal(std::string(pName), thread_mode, queue_mode, initPattern);
+    auto obj = std::make_shared<EventFlagInternal>(std::string(pName), thread_mode, queue_mode,
+                                                   initPattern);
+    *ef = g_event_flags.Create(pName, (attr & ORBIS_KERNEL_EVF_ATTR_OPEN) != 0, obj);
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelDeleteEventFlag(OrbisKernelEventFlag ef) {
-    if (ef == nullptr) {
+    if (!g_event_flags.Delete(ef)) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-
-    delete ef;
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceKernelOpenEventFlag() {
-    LOG_ERROR(Kernel_Event, "(STUBBED) called");
+int PS4_SYSV_ABI sceKernelOpenEventFlag(OrbisKernelEventFlag* ef, const char* pName) {
+    if (ef == nullptr || pName == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    if (std::strlen(pName) >= 32) {
+        return ORBIS_KERNEL_ERROR_ENAMETOOLONG;
+    }
+    const u64 handle = g_event_flags.Open(pName);
+    if (handle == 0) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    *ef = handle;
     return ORBIS_OK;
 }
 
-int PS4_SYSV_ABI sceKernelCloseEventFlag() {
-    LOG_ERROR(Kernel_Event, "(STUBBED) called");
-    return ORBIS_OK;
+int PS4_SYSV_ABI sceKernelCloseEventFlag(OrbisKernelEventFlag ef) {
+    return g_event_flags.Close(ef) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ESRCH;
 }
 
 int PS4_SYSV_ABI sceKernelClearEventFlag(OrbisKernelEventFlag ef, u64 bitPattern) {
     LOG_DEBUG(Kernel_Event, "called");
-    if (ef == nullptr) {
+    auto obj = g_event_flags.Get(ef);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    ef->Clear(bitPattern);
+    obj->Clear(bitPattern);
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelCancelEventFlag(OrbisKernelEventFlag ef, u64 setPattern,
                                           int* pNumWaitThreads) {
     LOG_DEBUG(Kernel_Event, "called");
-    if (ef == nullptr) {
+    auto obj = g_event_flags.Get(ef);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    ef->Cancel(setPattern, pNumWaitThreads);
+    obj->Cancel(setPattern, pNumWaitThreads);
     return ORBIS_OK;
 }
 
 int PS4_SYSV_ABI sceKernelSetEventFlag(OrbisKernelEventFlag ef, u64 bitPattern) {
     LOG_TRACE(Kernel_Event, "called");
-    if (ef == nullptr) {
+    auto obj = g_event_flags.Get(ef);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    ef->Set(bitPattern);
+    obj->Set(bitPattern);
     return ORBIS_OK;
 }
 
@@ -345,7 +365,8 @@ int PS4_SYSV_ABI sceKernelPollEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
                                         u64* pResultPat) {
     LOG_DEBUG(Kernel_Event, "called bitPattern = {:#x} waitMode = {:#x}", bitPattern, waitMode);
 
-    if (ef == nullptr) {
+    auto obj = g_event_flags.Get(ef);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
 
@@ -380,7 +401,7 @@ int PS4_SYSV_ABI sceKernelPollEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
         UNREACHABLE();
     }
 
-    auto result = ef->Poll(bitPattern, wait, clear, pResultPat);
+    auto result = obj->Poll(bitPattern, wait, clear, pResultPat);
 
     if (result != ORBIS_OK && result != ORBIS_KERNEL_ERROR_EBUSY) {
         LOG_DEBUG(Kernel_Event, "returned {:#x}", result);
@@ -391,7 +412,8 @@ int PS4_SYSV_ABI sceKernelPollEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
 int PS4_SYSV_ABI sceKernelWaitEventFlag(OrbisKernelEventFlag ef, u64 bitPattern, u32 waitMode,
                                         u64* pResultPat, OrbisKernelUseconds* pTimeout) {
     LOG_DEBUG(Kernel_Event, "called bitPattern = {:#x} waitMode = {:#x}", bitPattern, waitMode);
-    if (ef == nullptr) {
+    auto obj = g_event_flags.Get(ef);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
 
@@ -426,7 +448,7 @@ int PS4_SYSV_ABI sceKernelWaitEventFlag(OrbisKernelEventFlag ef, u64 bitPattern,
         UNREACHABLE();
     }
 
-    const int result = ef->Wait(bitPattern, wait, clear, pResultPat, pTimeout);
+    const int result = obj->Wait(bitPattern, wait, clear, pResultPat, pTimeout);
     if (result != ORBIS_OK && result != ORBIS_KERNEL_ERROR_ETIMEDOUT) {
         LOG_DEBUG(Kernel_Event, "returned {:#x}", result);
     }

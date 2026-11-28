@@ -17,6 +17,7 @@
 #include "core/libraries/libs.h"
 
 #ifdef _WIN64
+#include <psapi.h>
 #include <windows.h>
 #include "common/ntapi.h"
 #else
@@ -597,6 +598,77 @@ s32 PS4_SYSV_ABI sceKernelSettimeofday(OrbisKernelTimeval* _tv, OrbisKernelTimez
     return ret;
 }
 
+struct OrbisKernelRusage {
+    OrbisKernelTimeval ru_utime;
+    OrbisKernelTimeval ru_stime;
+    s64 ru_maxrss;
+    s64 ru_ixrss;
+    s64 ru_idrss;
+    s64 ru_isrss;
+    s64 ru_minflt;
+    s64 ru_majflt;
+    s64 ru_nswap;
+    s64 ru_inblock;
+    s64 ru_oublock;
+    s64 ru_msgsnd;
+    s64 ru_msgrcv;
+    s64 ru_nsignals;
+    s64 ru_nvcsw;
+    s64 ru_nivcsw;
+};
+static_assert(sizeof(OrbisKernelRusage) == 144);
+
+s32 PS4_SYSV_ABI posix_getrusage(s32 who, OrbisKernelRusage* ru) {
+    if (ru == nullptr) {
+        *__Error() = POSIX_EFAULT;
+        return -1;
+    }
+    if (who != 0 && who != -1 && who != 1) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+    std::memset(ru, 0, sizeof(*ru));
+#ifdef _WIN64
+    FILETIME ct{}, et{}, kt{}, ut{};
+    if (GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut)) {
+        const auto to_tv = [](const FILETIME& ft) -> OrbisKernelTimeval {
+            ULARGE_INTEGER uli;
+            uli.LowPart = ft.dwLowDateTime;
+            uli.HighPart = ft.dwHighDateTime;
+            const u64 us = uli.QuadPart / 10;
+            return {static_cast<s64>(us / 1'000'000), static_cast<s64>(us % 1'000'000)};
+        };
+        ru->ru_utime = to_tv(ut);
+        ru->ru_stime = to_tv(kt);
+    }
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        ru->ru_maxrss = static_cast<s64>(pmc.WorkingSetSize / 1024);
+    }
+#else
+    struct rusage host_ru{};
+    const int host_who = (who == 0) ? RUSAGE_SELF : RUSAGE_CHILDREN;
+    if (::getrusage(host_who, &host_ru) != 0) {
+        SetPosixErrno(errno);
+        return -1;
+    }
+    ru->ru_utime = {host_ru.ru_utime.tv_sec, host_ru.ru_utime.tv_usec};
+    ru->ru_stime = {host_ru.ru_stime.tv_sec, host_ru.ru_stime.tv_usec};
+#ifdef __APPLE__
+    ru->ru_maxrss = static_cast<s64>(host_ru.ru_maxrss / 1024);
+#else
+    ru->ru_maxrss = static_cast<s64>(host_ru.ru_maxrss);
+#endif
+    ru->ru_minflt = host_ru.ru_minflt;
+    ru->ru_majflt = host_ru.ru_majflt;
+    ru->ru_inblock = host_ru.ru_inblock;
+    ru->ru_oublock = host_ru.ru_oublock;
+    ru->ru_nvcsw = host_ru.ru_nvcsw;
+    ru->ru_nivcsw = host_ru.ru_nivcsw;
+#endif
+    return 0;
+}
+
 void RegisterTime(Core::Loader::SymbolsResolver* sym) {
     clock = std::make_unique<Common::NativeClock>();
     initial_host_uptime = clock->GetUptime();
@@ -619,6 +691,8 @@ void RegisterTime(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("smIj7eqzZE8", "libScePosix", 1, "libkernel", posix_clock_getres);
     LIB_FUNCTION("n88vx3C5nW8", "libkernel", 1, "libkernel", posix_gettimeofday);
     LIB_FUNCTION("n88vx3C5nW8", "libScePosix", 1, "libkernel", posix_gettimeofday);
+    LIB_FUNCTION("hHlZQUnlxSM", "libkernel", 1, "libkernel", posix_getrusage);
+    LIB_FUNCTION("hHlZQUnlxSM", "libScePosix", 1, "libkernel", posix_getrusage);
     LIB_FUNCTION("ChCOChPU-YM", "libkernel", 1, "libkernel", sceKernelSettimeofday);
     LIB_FUNCTION("VdXIDAbJ3tQ", "libScePosix", 1, "libkernel", posix_settimeofday);
     LIB_FUNCTION("d7nUj1LOdDU", "libScePosix", 1, "libkernel", posix_clock_settime);

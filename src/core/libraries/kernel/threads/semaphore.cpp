@@ -10,7 +10,7 @@
 #include "core/libraries/kernel/sync/semaphore.h"
 
 #include "common/logging/log.h"
-#include "common/slot_vector.h"
+#include "core/libraries/kernel/ipc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
@@ -310,59 +310,87 @@ public:
     bool is_fifo;
 };
 
-static constexpr u32 MAX_ORBIS_SEMAPHORES = std::numeric_limits<u16>::max();
+constexpr u32 ORBIS_KERNEL_SEMA_ATTR_OPEN = 0x100;
 
-using OrbisKernelSema = Common::SlotId;
+using OrbisKernelSema = u64;
 
-static Common::SlotVector<OrbisSem> orbis_sems;
+static NamedKernelRegistry<OrbisSem> g_orbis_sems{0x2001};
 
 s32 PS4_SYSV_ABI sceKernelCreateSema(OrbisKernelSema* sem, const char* pName, u32 attr,
                                      s32 initCount, s32 maxCount, const void* pOptParam) {
-    if (!pName || attr > 2 || initCount < 0 || maxCount <= 0 || initCount > maxCount) {
+    if (!sem || !pName || pOptParam != nullptr || (attr & ~0x103u) != 0 || (attr & 0x3u) > 2 ||
+        initCount < 0 || maxCount <= 0 || initCount > maxCount) {
         LOG_ERROR(Lib_Kernel, "Semaphore creation parameters are invalid!");
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
-    *sem = orbis_sems.Insert(initCount, maxCount, pName, attr == 1);
+    if (std::strlen(pName) >= 32) {
+        return ORBIS_KERNEL_ERROR_ENAMETOOLONG;
+    }
+    auto obj = std::make_shared<OrbisSem>(initCount, maxCount, pName, (attr & 0x3u) == 1);
+    *sem = g_orbis_sems.Create(pName, (attr & ORBIS_KERNEL_SEMA_ATTR_OPEN) != 0, obj);
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceKernelWaitSema(OrbisKernelSema sem, s32 needCount, u32* pTimeout) {
-    if (!orbis_sems.IsAllocated(sem)) {
+s32 PS4_SYSV_ABI sceKernelOpenSema(OrbisKernelSema* sem, const char* pName) {
+    if (!sem || !pName) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    if (std::strlen(pName) >= 32) {
+        return ORBIS_KERNEL_ERROR_ENAMETOOLONG;
+    }
+    const u64 handle = g_orbis_sems.Open(pName);
+    if (handle == 0) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Wait(true, needCount, pTimeout);
+    *sem = handle;
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelCloseSema(OrbisKernelSema sem) {
+    return g_orbis_sems.Close(sem) ? ORBIS_OK : ORBIS_KERNEL_ERROR_ESRCH;
+}
+
+s32 PS4_SYSV_ABI sceKernelWaitSema(OrbisKernelSema sem, s32 needCount, u32* pTimeout) {
+    auto obj = g_orbis_sems.Get(sem);
+    if (!obj) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    return obj->Wait(true, needCount, pTimeout);
 }
 
 s32 PS4_SYSV_ABI sceKernelSignalSema(OrbisKernelSema sem, s32 signalCount) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    auto obj = g_orbis_sems.Get(sem);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    if (!orbis_sems[sem].Signal(signalCount)) {
+    if (!obj->Signal(signalCount)) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceKernelPollSema(OrbisKernelSema sem, s32 needCount) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    auto obj = g_orbis_sems.Get(sem);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Wait(false, needCount, nullptr);
+    return obj->Wait(false, needCount, nullptr);
 }
 
 s32 PS4_SYSV_ABI sceKernelCancelSema(OrbisKernelSema sem, s32 setCount, s32* pNumWaitThreads) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    auto obj = g_orbis_sems.Get(sem);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    return orbis_sems[sem].Cancel(setCount, pNumWaitThreads);
+    return obj->Cancel(setCount, pNumWaitThreads);
 }
 
 s32 PS4_SYSV_ABI sceKernelDeleteSema(OrbisKernelSema sem) {
-    if (!orbis_sems.IsAllocated(sem)) {
+    auto obj = g_orbis_sems.Delete(sem);
+    if (!obj) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    orbis_sems[sem].Delete();
-    orbis_sems.Erase(sem);
+    obj->Delete();
     return ORBIS_OK;
 }
 
@@ -537,10 +565,10 @@ s32 PS4_SYSV_ABI scePthreadSemGetvalue(PthreadSem** sem, s32* sval) {
 }
 
 void RegisterSemaphore(Core::Loader::SymbolsResolver* sym) {
-    orbis_sems.ResizeDestructive(MAX_ORBIS_SEMAPHORES);
-
     // Orbis
     LIB_FUNCTION("188x57JYp0g", "libkernel", 1, "libkernel", sceKernelCreateSema);
+    LIB_FUNCTION("MwhHNKdBXq8", "libkernel", 1, "libkernel", sceKernelOpenSema);
+    LIB_FUNCTION("HBkUky2PZPA", "libkernel", 1, "libkernel", sceKernelCloseSema);
     LIB_FUNCTION("Zxa0VhQVTsk", "libkernel", 1, "libkernel", sceKernelWaitSema);
     LIB_FUNCTION("4czppHBiriw", "libkernel", 1, "libkernel", sceKernelSignalSema);
     LIB_FUNCTION("12wOHk8ywb0", "libkernel", 1, "libkernel", sceKernelPollSema);
