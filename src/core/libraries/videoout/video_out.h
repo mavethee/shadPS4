@@ -63,6 +63,10 @@ enum class OrbisVideoOutInternalEventId : s16 {
     SysVblank = 0x63,
 };
 
+constexpr u64 MakeVideoOutEventIdent(OrbisVideoOutInternalEventId event_id, s32 handle) {
+    return (static_cast<u64>(event_id) << 48) | (static_cast<u64>(handle & 0xf7) << 40);
+}
+
 enum class AspectRatioMode : s32 {
     Ratio16_9 = 0,
 };

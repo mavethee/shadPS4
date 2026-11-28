@@ -118,8 +118,10 @@ struct EqueueEvent {
         if (data != nullptr) {
             auto event_data = std::bit_cast<OrbisVideoOutEventData>(event.data);
             auto event_hint_raw = reinterpret_cast<u64>(data);
-            auto event_hint = static_cast<OrbisVideoOutEventHint>(event_hint_raw);
-            if (event_hint.event_id == event.ident && event.ident != 0xfe) {
+            auto event_hint = std::bit_cast<OrbisVideoOutEventHint>(event_hint_raw);
+            const u64 raw_id = (event.ident >> 48) & 0xffff;
+            const u64 ev_id = raw_id != 0 ? raw_id : event.ident;
+            if (event_hint.event_id == ev_id && ev_id != 0xfe) {
                 auto time = Common::FencedRDTSC();
                 auto counter = event_data.count;
                 if (counter != 0xf) {

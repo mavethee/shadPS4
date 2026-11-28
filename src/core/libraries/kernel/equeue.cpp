@@ -273,7 +273,8 @@ int EqueueInternal::GetTriggeredEvents(OrbisKernelEvent* ev, int num) {
 
         if (it->IsTriggered()) {
             ev[count++] = it->event;
-            if (it->event.flags & OrbisKernelEvent::Flags::Clear) {
+            if (it->event.filter == OrbisKernelEvent::Filter::VideoOut ||
+                (it->event.flags & OrbisKernelEvent::Flags::Clear)) {
                 it->Clear();
             }
             if (it->event.flags & OrbisKernelEvent::Flags::OneShot) {
@@ -881,7 +882,9 @@ int PS4_SYSV_ABI sceKernelDeleteFileEvent(OrbisKernelEqueue eq, int fd) {
 }
 
 void RegisterEventQueue(Core::Loader::SymbolsResolver* sym) {
+    LIB_FUNCTION("nh2IFMgKTv8", "libkernel", 1, "libkernel", posix_kqueue);
     LIB_FUNCTION("nh2IFMgKTv8", "libScePosix", 1, "libkernel", posix_kqueue);
+    LIB_FUNCTION("RW-GEfpnsqg", "libkernel", 1, "libkernel", posix_kevent);
     LIB_FUNCTION("RW-GEfpnsqg", "libScePosix", 1, "libkernel", posix_kevent);
     LIB_FUNCTION("D0OdFMjp46I", "libkernel", 1, "libkernel", sceKernelCreateEqueue);
     LIB_FUNCTION("jpFjmgAC5AE", "libkernel", 1, "libkernel", sceKernelDeleteEqueue);
