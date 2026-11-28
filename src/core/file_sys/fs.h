@@ -42,6 +42,7 @@ public:
         std::filesystem::path host_path;
         std::string mount; // e.g /app0
         bool read_only;
+        bool case_sensitive = false;
         std::vector<std::shared_ptr<IBackend>> backends;
     };
 
@@ -55,10 +56,13 @@ public:
     explicit MntPoints() = default;
     ~MntPoints() = default;
 
-    std::shared_ptr<IBackend> CreateBackend(const std::filesystem::path& host_path, bool read_only);
+    static bool IsCaseSensitiveGuestMount(std::string_view guest_mount);
+
+    std::shared_ptr<IBackend> CreateBackend(const std::filesystem::path& host_path, bool read_only,
+                                            bool case_sensitive = false);
 
     void Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
-               bool read_only = false);
+               bool read_only = false, std::optional<bool> case_sensitive = std::nullopt);
     void Unmount(const std::string& guest_folder);
     void UnmountAll();
 
@@ -142,6 +146,8 @@ enum class FileType {
 
 struct File {
     std::atomic_bool is_opened{};
+    bool is_pipe{false};
+    bool is_shm{false};
     std::atomic<FileType> type{FileType::Regular};
     std::atomic<u32> ref_count{1};
     std::atomic<s32> m_flags{0};
