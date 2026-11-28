@@ -74,7 +74,7 @@ void Linker::Execute(const std::vector<std::string>& args) {
     }
 
     // Calculate static TLS size.
-    Module* module = m_modules[0].get();
+    Module* module = GetModule(0);
     static_tls_size = module->tls.offset = module->tls.image_size;
 
     // Map libSceLibcInternal
@@ -99,13 +99,13 @@ void Linker::Execute(const std::vector<std::string>& args) {
     static PS4_SYSV_ABI void (*sceLibcInternalMemoryMutexEnable)() = nullptr;
 
     if (has_libcinternal) {
-        for (const auto& m : m_modules) {
-            const auto& mod = m.get();
-            if (mod->name.contains("libSceLibcInternal.sprx")) {
-                malloc_init =
-                    reinterpret_cast<PS4_SYSV_ABI s32 (*)()>(mod->FindByName("_malloc_init"));
+        for (const s32 handle : m_load_order) {
+            const auto* mod = GetModule(handle);
+            if (mod && mod->name.contains("libSceLibcInternal.sprx")) {
+                malloc_init = reinterpret_cast<PS4_SYSV_ABI s32 (*)()>(
+                    const_cast<Module*>(mod)->FindByName("_malloc_init"));
                 sceLibcInternalMemoryMutexEnable = reinterpret_cast<PS4_SYSV_ABI void (*)()>(
-                    mod->FindByName("sceLibcInternalMemoryMutexEnable"));
+                    const_cast<Module*>(mod)->FindByName("sceLibcInternalMemoryMutexEnable"));
                 break;
             }
         }
@@ -227,91 +227,395 @@ void Linker::Execute(const std::vector<std::string>& args) {
     });
 }
 
-s32 Linker::LoadModule(const std::filesystem::path& elf_name, bool is_dynamic) {
+s32 Linker::FindByName(const std::filesystem::path& name) const {
+    const auto resolved = ResolveModulePath(name);
+    for (const s32 handle : m_load_order) {
+        const auto* mod = GetModule(handle);
+        if (!mod) {
+            continue;
+        }
+        if (name == mod->file || resolved == mod->file) {
+            return handle;
+        }
+    }
+    return -1;
+}
+
+s32 Linker::FindByGuestOrBaseName(std::string_view name) const {
+    for (const s32 handle : m_load_order) {
+        const auto* mod = GetModule(handle);
+        if (!mod) {
+            continue;
+        }
+        if (mod->name == name || std::string_view{mod->info.name.data()} == name) {
+            return handle;
+        }
+    }
+    return -1;
+}
+
+void Linker::RelocateAnyImports(Module* m) {
     std::scoped_lock lk{mutex};
+
+    Relocate(m);
+    const auto exports = m->GetExportModules();
+    for (const auto& export_mod : exports) {
+        for (const s32 handle : m_load_order) {
+            auto* module = GetModule(handle);
+            if (!module) {
+                continue;
+            }
+            const auto imports = module->GetImportModules();
+            if (std::ranges::contains(imports, export_mod.name, &ModuleInfo::name)) {
+                Relocate(module);
+            }
+        }
+    }
+}
+
+void Linker::RelocateAllImports() {
+    std::scoped_lock lk{mutex};
+    for (const s32 handle : m_load_order) {
+        if (auto* module = GetModule(handle)) {
+            Relocate(module);
+        }
+    }
+}
+
+std::filesystem::path Linker::ResolveModulePath(const std::filesystem::path& path) const {
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
-    const std::string as_guest = elf_name.generic_string();
+    const std::string raw = path.generic_string();
+    if (raw.empty()) {
+        return path;
+    }
+
+    auto exists_in_vfs_or_host = [&](const std::filesystem::path& candidate) -> bool {
+        const std::string c = candidate.generic_string();
+        if (!c.empty() && c.front() == '/') {
+            return mnt->Exists(c) || std::filesystem::exists(candidate);
+        }
+        return std::filesystem::exists(candidate);
+    };
+
+    if (raw.front() == '/') {
+        if (exists_in_vfs_or_host(path)) {
+            return path;
+        }
+        if (raw.starts_with("/system/common/lib/") || raw.starts_with("/system/priv/lib/")) {
+            const auto sys_candidate = EmulatorSettings.GetSysModulesDir() / path.filename();
+            if (std::filesystem::exists(sys_candidate)) {
+                return sys_candidate;
+            }
+        }
+        if (raw.starts_with("/app0/lib/")) {
+            const std::filesystem::path alt =
+                std::filesystem::path{"/app0/sce_module"} / path.filename();
+            if (exists_in_vfs_or_host(alt)) {
+                return alt;
+            }
+        } else if (raw.starts_with("/app0/sce_module/")) {
+            const std::filesystem::path alt = std::filesystem::path{"/app0/lib"} / path.filename();
+            if (exists_in_vfs_or_host(alt)) {
+                return alt;
+            }
+        }
+        return path;
+    }
+
+    if (!raw.contains('/')) {
+        for (const std::string_view dir : {"/app0/sce_module", "/app0/lib", "/app0"}) {
+            const std::filesystem::path candidate = std::filesystem::path{dir} / path;
+            if (exists_in_vfs_or_host(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return path;
+}
+
+s32 Linker::AllocateHandle(bool is_dynamic) {
+    if (!is_dynamic && !m_modules.contains(0)) {
+        return 0;
+    }
+    while (next_dynamic_handle == 0 || next_dynamic_handle == LibKernelHandle ||
+           m_modules.contains(next_dynamic_handle)) {
+        next_dynamic_handle++;
+        if (next_dynamic_handle > 0x70000000) {
+            next_dynamic_handle = 2;
+        }
+    }
+    return next_dynamic_handle++;
+}
+
+bool Linker::LoadDependencies(Module* module, std::unordered_set<std::string>& loading) {
+    for (const char* needed_name : module->dynamic_info.needed) {
+        if (!needed_name || needed_name[0] == '\0') {
+            continue;
+        }
+        const std::filesystem::path dep_path = ResolveModulePath(needed_name);
+        const std::string dep_key = dep_path.generic_string();
+        if (loading.contains(dep_key)) {
+            continue;
+        }
+        const s32 existing = FindByName(dep_path);
+        if (existing > 0) {
+            if (auto* dep_mod = GetModule(existing)) {
+                dep_mod->AddRef();
+                module->dependencies.push_back(existing);
+            }
+            continue;
+        }
+        auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+        const bool can_open =
+            (!dep_key.empty() && dep_key.front() == '/' && mnt->Exists(dep_key)) ||
+            std::filesystem::exists(dep_path);
+        if (!can_open) {
+            continue;
+        }
+        loading.insert(dep_key);
+        s32 dep_err = ORBIS_OK;
+        const s32 dep_handle = LoadAndStartModule(dep_path, 0, nullptr, nullptr, &dep_err);
+        loading.erase(dep_key);
+        if (dep_handle > 0) {
+            module->dependencies.push_back(dep_handle);
+        }
+    }
+    return true;
+}
+
+void Linker::UnloadModuleLocked(s32 handle, std::vector<s32>& deps_to_release) {
+    const auto it = m_modules.find(handle);
+    if (it == m_modules.end()) {
+        return;
+    }
+    auto& mod = it->second;
+    deps_to_release = std::move(mod->dependencies);
+    if (mod->tls.modid != 0) {
+        m_tls_modules.erase(mod->tls.modid);
+        AdvanceGenerationCounter();
+    }
+    std::erase(m_load_order, handle);
+    m_modules.erase(it);
+}
+
+s32 Linker::LoadModule(const std::filesystem::path& elf_name, bool is_dynamic, s32* out_error) {
+    std::scoped_lock lk{mutex};
+    const auto set_err = [out_error](s32 err) {
+        if (out_error) {
+            *out_error = err;
+        }
+    };
+
+    if (m_modules.size() >= max_modules) {
+        set_err(ORBIS_KERNEL_ERROR_ENOMEM);
+        return -1;
+    }
+
+    const auto resolved_path = ResolveModulePath(elf_name);
+    auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
+    const std::string as_guest = resolved_path.generic_string();
     std::unique_ptr<Core::FileSys::IFile> handle;
     if (!as_guest.empty() && as_guest.front() == '/') {
         handle = mnt->Open(as_guest, /*writable=*/false);
     }
     if (!handle) {
-        if (!std::filesystem::exists(elf_name)) {
-            LOG_ERROR(Core_Linker, "Provided file {} does not exist", elf_name.string());
+        if (!std::filesystem::exists(resolved_path)) {
+            LOG_ERROR(Core_Linker, "Provided file {} does not exist", resolved_path.string());
+            set_err(ORBIS_KERNEL_ERROR_ENOENT);
             return -1;
         }
         auto host = std::make_unique<Core::FileSys::HostFile>(
-            elf_name, Common::FS::FileAccessMode::Read, /*read_only=*/true);
+            resolved_path, Common::FS::FileAccessMode::Read, /*read_only=*/true);
         if (!host->IsOpen()) {
-            LOG_ERROR(Core_Linker, "Provided file {} could not be opened", elf_name.string());
+            LOG_ERROR(Core_Linker, "Provided file {} could not be opened", resolved_path.string());
+            set_err(ORBIS_KERNEL_ERROR_EACCES);
             return -1;
         }
         handle = std::move(host);
     }
 
-    s32 mod_id = m_modules.size();
+    const s32 mod_id = AllocateHandle(is_dynamic);
     auto module =
-        std::make_unique<Module>(memory, elf_name, std::move(handle), max_tls_index, mod_id);
-    ASSERT_MSG(module->IsValid(),
-               "Provided file {} is not valid ELF file. This usually indicated a corrupted dump.",
-               elf_name.string());
+        std::make_unique<Module>(memory, resolved_path, std::move(handle), max_tls_index, mod_id);
+    if (!module->IsValid()) {
+        if (!is_dynamic) {
+            ASSERT_MSG(
+                false,
+                "Provided file {} is not valid ELF file. This usually indicated a corrupted dump.",
+                resolved_path.string());
+        }
+        LOG_ERROR(Core_Linker, "Invalid ELF/SELF file {}", resolved_path.string());
+        set_err(ORBIS_KERNEL_ERROR_ENOEXEC);
+        return -1;
+    }
 
+    if (module->tls.modid != 0) {
+        m_tls_modules[module->tls.modid] = module.get();
+    }
     num_static_modules += !is_dynamic;
-    m_modules.emplace_back(std::move(module));
+    m_modules.emplace(mod_id, std::move(module));
+    m_load_order.push_back(mod_id);
 
-    Core::Devtools::Widget::ModuleList::AddModule(elf_name.filename().string(), elf_name);
-
+    Core::Devtools::Widget::ModuleList::AddModule(resolved_path.filename().string(), resolved_path);
+    set_err(ORBIS_OK);
     return mod_id;
 }
 
 s32 Linker::LoadAndStartModule(const std::filesystem::path& path, u64 args, const void* argp,
-                               int* pRes) {
-    u32 handle = FindByName(path);
+                               int* pRes, s32* out_error) {
+    const auto set_err = [out_error](s32 err) {
+        if (out_error) {
+            *out_error = err;
+        }
+    };
+
+    std::unique_lock lk{mutex};
+    const auto resolved_path = ResolveModulePath(path);
+    s32 handle = FindByName(resolved_path);
     if (handle != -1) {
+        if (auto* existing = GetModule(handle)) {
+            existing->AddRef();
+        }
+        set_err(ORBIS_OK);
         return handle;
     }
-    handle = LoadModule(path, true);
+
+    s32 load_err = ORBIS_OK;
+    handle = LoadModule(resolved_path, true, &load_err);
     if (handle == -1) {
+        set_err(load_err);
         return -1;
     }
+
     auto* module = GetModule(handle);
+    auto* param = module->GetProcParam<OrbisProcParam*>();
+    if ((param && param->size < 0x18) ||
+        (module->sdk_version != 0 && (module->sdk_version & 0xffff0000U) > 0x14000000U)) {
+        const s32 err = (param && param->size < 0x18) ? ORBIS_KERNEL_ERROR_ENOEXEC
+                                                      : ORBIS_KERNEL_ERROR_ESDKVERSION;
+        std::vector<s32> deps;
+        UnloadModuleLocked(handle, deps);
+        set_err(err);
+        return -1;
+    }
+
+    std::unordered_set<std::string> loading;
+    loading.insert(resolved_path.generic_string());
+    LoadDependencies(module, loading);
+
     RelocateAnyImports(module);
 
-    // If the new module has a TLS image, trigger its load when TlsGetAddr is called.
     if (module->tls.image_size != 0) {
         AdvanceGenerationCounter();
     }
 
-    // Retrieve and verify proc param according to libkernel.
-    auto* param = module->GetProcParam<OrbisProcParam*>();
-    ASSERT_MSG(!param || param->size >= 0x18, "Invalid module param size: {}", param->size);
-    s32 ret = module->Start(args, argp, param);
+    lk.unlock();
+
+    const s32 ret = module->Start(args, argp, nullptr);
     if (pRes) {
         *pRes = ret;
     }
 
+    s32 sdk_ver = 0;
+    Libraries::Kernel::sceKernelGetCompiledSdkVersion(&sdk_ver);
+    if (ret < 0 && sdk_ver >= 0x02000000) {
+        module->Stop(0, nullptr, nullptr);
+        lk.lock();
+        std::vector<s32> deps;
+        UnloadModuleLocked(handle, deps);
+        lk.unlock();
+        for (const s32 dep : deps) {
+            StopUnloadModule(dep, 0, nullptr, nullptr);
+        }
+        const s32 ret_err = (sdk_ver < static_cast<s32>(Common::ElfInfo::FW_1150))
+                                ? ORBIS_KERNEL_ERROR_EINVAL
+                                : ORBIS_KERNEL_ERROR_ESTART;
+        set_err(ret_err);
+        return -1;
+    }
+
+    set_err(ORBIS_OK);
     return handle;
 }
 
-Module* Linker::FindByAddress(VAddr address) {
-    for (auto& module : m_modules) {
-        const VAddr base = module->GetBaseAddress();
-        if (address >= base && address < base + module->aligned_base_size) {
-            return module.get();
+s32 Linker::StopUnloadModule(s32 handle, u64 args, const void* argp, int* pRes) {
+    if (handle == 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+
+    std::unique_lock lk{mutex};
+    auto* module = GetModule(handle);
+    if (!module) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+
+    if (module->GetRefCount() <= 1) {
+        for (const s32 other_handle : m_load_order) {
+            if (other_handle == handle) {
+                continue;
+            }
+            const auto* other = GetModule(other_handle);
+            if (other && std::ranges::contains(other->dependencies, handle)) {
+                return ORBIS_KERNEL_ERROR_EBUSY;
+            }
+        }
+    }
+
+    if (module->ReleaseRef() > 0) {
+        return ORBIS_OK;
+    }
+
+    lk.unlock();
+    const s32 stop_ret = module->Stop(args, argp, nullptr);
+    if (pRes) {
+        *pRes = stop_ret;
+    }
+    lk.lock();
+
+    std::vector<s32> deps;
+    UnloadModuleLocked(handle, deps);
+    lk.unlock();
+
+    for (const s32 dep : deps) {
+        StopUnloadModule(dep, 0, nullptr, nullptr);
+    }
+    return ORBIS_OK;
+}
+
+Module* Linker::FindByAddress(VAddr address, u32 flags) {
+    std::scoped_lock lk{mutex};
+    for (const s32 handle : m_load_order) {
+        auto* module = GetModule(handle);
+        if (!module) {
+            continue;
+        }
+        if (flags != 0) {
+            if (module->ContainsSegmentAddress(address, flags)) {
+                return module;
+            }
+        } else {
+            const VAddr base = module->GetBaseAddress();
+            if (address >= base && address < base + module->aligned_base_size) {
+                return module;
+            }
         }
     }
     return nullptr;
 }
 
 void Linker::Relocate(Module* module) {
+    if (!module || !module->dynamic_info.symbol_table || !module->dynamic_info.str_table) {
+        return;
+    }
+    const u32 num_relocs =
+        static_cast<u32>(module->dynamic_info.relocation_table_size / sizeof(elf_relocation));
     module->ForEachRelocation([&](elf_relocation* rel, u32 i, bool is_jmp_rel) {
-        const u32 num_relocs = module->dynamic_info.relocation_table_size / sizeof(elf_relocation);
         const u32 bit_idx = (is_jmp_rel ? num_relocs : 0) + i;
         if (module->TestRelaBit(bit_idx)) {
             return;
         }
-        auto type = rel->GetType();
-        auto symbol = rel->GetSymbol();
+        const auto type = rel->GetType();
+        const auto symbol = rel->GetSymbol();
         auto addend = rel->rel_addend;
         auto* symbol_table = module->dynamic_info.symbol_table;
         auto* names_tlb = module->dynamic_info.str_table;
@@ -319,70 +623,157 @@ void Linker::Relocate(Module* module) {
         const VAddr rel_base_virtual_addr = module->GetBaseAddress();
         const VAddr rel_virtual_addr = rel_base_virtual_addr + rel->rel_offset;
         bool rel_is_resolved = false;
+        bool mark_done = false;
         u64 rel_value = 0;
+        u32 rel_write_size = sizeof(u64);
         Loader::SymbolType rel_sym_type = Loader::SymbolType::Unknown;
         std::string rel_name;
 
+        const u32 num_syms =
+            static_cast<u32>(module->dynamic_info.symbol_table_total_size / sizeof(elf_symbol));
+        const auto get_sym_type = [](u8 st) -> Loader::SymbolType {
+            switch (st) {
+            case STT_FUN:
+                return Loader::SymbolType::Function;
+            case STT_OBJECT:
+                return Loader::SymbolType::Object;
+            case STT_TLS:
+                return Loader::SymbolType::Tls;
+            case STT_NOTYPE:
+            default:
+                return Loader::SymbolType::NoType;
+            }
+        };
+
         switch (type) {
+        case R_X86_64_NONE:
+            module->SetRelaBit(bit_idx);
+            return;
         case R_X86_64_RELATIVE:
             rel_value = rel_base_virtual_addr + addend;
             rel_is_resolved = true;
-            module->SetRelaBit(bit_idx);
+            mark_done = true;
             break;
-        case R_X86_64_DTPMOD64:
-            rel_value = static_cast<u64>(module->tls.modid);
-            rel_is_resolved = true;
+        case R_X86_64_DTPMOD64: {
+            if (symbol == 0 || symbol >= num_syms || symbol_table[symbol].GetBind() == STB_LOCAL ||
+                symbol_table[symbol].st_shndx != 0) {
+                rel_value = static_cast<u64>(module->tls.modid);
+                rel_is_resolved = true;
+                mark_done = true;
+            } else {
+                const auto& sym = symbol_table[symbol];
+                rel_name = names_tlb + sym.st_name;
+                Loader::SymbolRecord symrec{};
+                if (Resolve(rel_name, get_sym_type(sym.GetType()), module, &symrec)) {
+                    for (const s32 handle : m_load_order) {
+                        const auto* candidate = GetModule(handle);
+                        if (candidate && candidate->export_sym.FindSymbol(symrec.symbol)) {
+                            rel_value = static_cast<u64>(candidate->tls.modid);
+                            rel_is_resolved = true;
+                            mark_done = true;
+                            break;
+                        }
+                    }
+                }
+            }
             rel_sym_type = Loader::SymbolType::Tls;
-            module->SetRelaBit(bit_idx);
             break;
+        }
+        case R_X86_64_DTPOFF64: {
+            if (symbol < num_syms) {
+                const auto& sym = symbol_table[symbol];
+                if (sym.GetBind() == STB_LOCAL || sym.st_shndx != 0) {
+                    const u64 sym_off =
+                        (sym.GetType() == STT_TLS || sym.st_value < module->tls.image_size)
+                            ? sym.st_value
+                            : 0;
+                    rel_value = sym_off + addend;
+                    rel_is_resolved = true;
+                    mark_done = true;
+                } else {
+                    rel_name = names_tlb + sym.st_name;
+                    Loader::SymbolRecord symrec{};
+                    if (Resolve(rel_name, get_sym_type(sym.GetType()), module, &symrec)) {
+                        rel_value = symrec.virtual_address + addend;
+                        rel_is_resolved = true;
+                        mark_done = true;
+                    }
+                }
+            }
+            break;
+        }
+        case R_X86_64_TPOFF64: {
+            if (symbol < num_syms) {
+                const auto& sym = symbol_table[symbol];
+                rel_value = sym.st_value - module->tls.offset + addend;
+                rel_is_resolved = true;
+                mark_done = true;
+            }
+            break;
+        }
+        case R_X86_64_COPY: {
+            if (symbol < num_syms) {
+                const auto& sym = symbol_table[symbol];
+                rel_name = names_tlb + sym.st_name;
+                Loader::SymbolRecord symrec{};
+                if (Resolve(rel_name, Loader::SymbolType::Object, module, &symrec, true) &&
+                    symrec.virtual_address != 0 && sym.st_size > 0) {
+                    std::memcpy(reinterpret_cast<void*>(rel_virtual_addr),
+                                reinterpret_cast<const void*>(symrec.virtual_address), sym.st_size);
+                    module->SetRelaBit(bit_idx);
+                }
+            }
+            return;
+        }
         case R_X86_64_GLOB_DAT:
         case R_X86_64_JUMP_SLOT:
             addend = 0;
+        case R_X86_64_PC32:
         case R_X86_64_64: {
-            auto sym = symbol_table[symbol];
-            auto sym_bind = sym.GetBind();
-            auto sym_type = sym.GetType();
-            auto sym_visibility = sym.GetVisibility();
+            if (symbol >= num_syms) {
+                break;
+            }
+            const auto sym = symbol_table[symbol];
+            const auto sym_bind = sym.GetBind();
+            const auto sym_type = sym.GetType();
             u64 symbol_virtual_addr = 0;
             Loader::SymbolRecord symrec{};
-            switch (sym_type) {
-            case STT_FUN:
-                rel_sym_type = Loader::SymbolType::Function;
-                break;
-            case STT_OBJECT:
-                rel_sym_type = Loader::SymbolType::Object;
-                break;
-            case STT_NOTYPE:
-                rel_sym_type = Loader::SymbolType::NoType;
-                break;
-            default:
-                ASSERT_MSG(0, "unknown symbol type {}", sym_type);
-            }
-
-            if (sym_visibility != 0) {
-                LOG_INFO(Core_Linker, "symbol visibility !=0");
-            }
+            rel_sym_type = get_sym_type(sym_type);
 
             switch (sym_bind) {
             case STB_LOCAL:
                 symbol_virtual_addr = rel_base_virtual_addr + sym.st_value;
-                module->SetRelaBit(bit_idx);
+                mark_done = true;
                 break;
             case STB_GLOBAL:
             case STB_WEAK: {
                 rel_name = names_tlb + sym.st_name;
                 if (Resolve(rel_name, rel_sym_type, module, &symrec)) {
-                    // Only set the rela bit if the symbol was actually resolved and not stubbed.
-                    module->SetRelaBit(bit_idx);
+                    mark_done = true;
+                    symbol_virtual_addr = symrec.virtual_address;
+                } else if (sym_bind == STB_WEAK) {
+                    symbol_virtual_addr = 0;
+                    rel_is_resolved = true;
+                } else {
+                    symbol_virtual_addr = symrec.virtual_address;
                 }
-                symbol_virtual_addr = symrec.virtual_address;
                 break;
             }
             default:
                 UNREACHABLE_MSG("Unknown bind type {}", sym_bind);
             }
-            rel_is_resolved = (symbol_virtual_addr != 0);
-            rel_value = (rel_is_resolved ? symbol_virtual_addr + addend : 0);
+            if (symbol_virtual_addr != 0) {
+                rel_is_resolved = true;
+            }
+            if (type == R_X86_64_PC32) {
+                rel_value = rel_is_resolved && symbol_virtual_addr != 0
+                                ? static_cast<u32>(static_cast<s32>(symbol_virtual_addr + addend -
+                                                                    rel_virtual_addr))
+                                : 0;
+                rel_write_size = sizeof(u32);
+            } else {
+                rel_value = (symbol_virtual_addr != 0 ? symbol_virtual_addr + addend : 0);
+            }
             rel_name = symrec.symbol.name;
             break;
         }
@@ -390,8 +781,11 @@ void Linker::Relocate(Module* module) {
             LOG_INFO(Core_Linker, "UNK type {:#010x} rel symbol : {:#010x}", type, symbol);
         }
 
+        if (mark_done) {
+            module->SetRelaBit(bit_idx);
+        }
         if (rel_is_resolved) {
-            std::memcpy(reinterpret_cast<void*>(rel_virtual_addr), &rel_value, sizeof(rel_value));
+            std::memcpy(reinterpret_cast<void*>(rel_virtual_addr), &rel_value, rel_write_size);
         } else if (rel_sym_type == Loader::SymbolType::Function) {
             LOG_INFO(Core_Linker, "Function not patched! {}", rel_name);
         }
@@ -399,7 +793,7 @@ void Linker::Relocate(Module* module) {
 }
 
 bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Module* m,
-                     Loader::SymbolRecord* return_info) {
+                     Loader::SymbolRecord* return_info, bool skip_copy_source) {
     const auto ids = Common::SplitString(name, '#');
     const LibraryInfo* library;
     const ModuleInfo* module;
@@ -426,27 +820,49 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
     sr.module = module->name;
     sr.type = sym_type;
 
-    const auto* record = m_hle_symbols.FindSymbol(sr);
+    const auto* record = skip_copy_source ? nullptr : m_hle_symbols.FindSymbol(sr);
     if (record) {
         *return_info = *record;
         Core::Devtools::Widget::ModuleList::AddModule(sr.library);
         return true;
     }
 
-    // Check if it an exported function from one of our loaded libraries
-    for (const auto& mod : m_modules) {
+    const Loader::SymbolRecord* weak_candidate = nullptr;
+    auto check_module = [&](const Module* mod) -> const Loader::SymbolRecord* {
+        if (!mod || (skip_copy_source && mod == m)) {
+            return nullptr;
+        }
         if (!std::ranges::contains(mod->GetExportLibs(), *library) ||
             !std::ranges::contains(mod->GetExportModules(), *module)) {
-            continue;
+            return nullptr;
         }
         if (mod->export_sym.GetSize() == 0) {
-            continue;
+            return nullptr;
         }
-        record = mod->export_sym.FindSymbol(sr);
-        if (record) {
-            *return_info = *record;
+        const auto* rec = mod->export_sym.FindSymbol(sr);
+        if (rec && rec->is_weak && !weak_candidate) {
+            weak_candidate = rec;
+            return nullptr;
+        }
+        return rec;
+    };
+
+    // Prioritize declared dependencies before scanning the global module load order.
+    for (const s32 dep_handle : m->dependencies) {
+        if (const auto* rec = check_module(GetModule(dep_handle))) {
+            *return_info = *rec;
             return true;
         }
+    }
+    for (const s32 handle : m_load_order) {
+        if (const auto* rec = check_module(GetModule(handle))) {
+            *return_info = *rec;
+            return true;
+        }
+    }
+    if (weak_candidate) {
+        *return_info = *weak_candidate;
+        return true;
     }
 
     const auto aeronid = AeroLib::FindByNid(sr.name.c_str());
@@ -474,40 +890,100 @@ bool Linker::Resolve(const std::string& name, Loader::SymbolType sym_type, Modul
     return false;
 }
 
+s32 Linker::Dlsym(s32 handle, const char* symbol, void** addrp) {
+    if (!addrp) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    if (!symbol || symbol[0] == '\0') {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+
+    std::scoped_lock lk{mutex};
+    if (handle == LibKernelHandle) {
+        const std::string nid = Module::StringToNid(symbol);
+        for (const auto& rec : m_hle_symbols.GetSymbols()) {
+            if ((rec.symbol.module == "libkernel" || rec.symbol.library == "libkernel" ||
+                 rec.symbol.library == "libkernel_psmkit" || rec.symbol.library == "libScePosix") &&
+                (rec.symbol.name == nid || rec.symbol.nidName == symbol ||
+                 rec.symbol.name == symbol)) {
+                *addrp = reinterpret_cast<void*>(rec.virtual_address);
+                return ORBIS_OK;
+            }
+        }
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+
+    auto* module = GetModule(handle);
+    if (!module) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+
+    void* resolved = module->FindByName(symbol);
+    if (!resolved) {
+        resolved = module->FindByNid(symbol);
+    }
+    if (!resolved) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+
+    *addrp = resolved;
+    return ORBIS_OK;
+}
+
 void* Linker::TlsGetAddr(u64 module_index, u64 offset) {
     std::scoped_lock lk{mutex};
 
     DtvEntry* dtv_table = GetTcbBase()->tcb_dtv;
     if (dtv_table[0].counter != dtv_generation_counter) {
-        // Generation counter changed, a dynamic module was either loaded or unloaded.
-        const u32 old_num_dtvs = dtv_table[1].counter;
-        ASSERT_MSG(max_tls_index > old_num_dtvs, "Module unloading unsupported");
-        // Module was loaded, increase DTV table size.
-        DtvEntry* new_dtv_table = new DtvEntry[max_tls_index + 2]{};
-        std::memcpy(new_dtv_table + 2, dtv_table + 2, old_num_dtvs * sizeof(DtvEntry));
+        const u32 old_num_dtvs = static_cast<u32>(dtv_table[1].counter);
+        const u32 new_num_dtvs = std::max(old_num_dtvs, max_tls_index);
+        DtvEntry* new_dtv_table = new DtvEntry[new_num_dtvs + 2]{};
+        for (u32 i = 1; i <= old_num_dtvs; ++i) {
+            u8* ptr = dtv_table[i + 1].pointer;
+            if (!ptr) {
+                continue;
+            }
+            if (i <= max_tls_index && m_tls_modules.contains(i)) {
+                new_dtv_table[i + 1].pointer = ptr;
+            } else {
+                const u8* tcb_ptr = reinterpret_cast<const u8*>(GetTcbBase());
+                const u8* tls_base = tcb_ptr - static_tls_size;
+                if (ptr < tls_base || ptr >= tcb_ptr) {
+                    FreeTlsForNonPrimaryThread(ptr);
+                }
+            }
+        }
         new_dtv_table[0].counter = dtv_generation_counter;
-        new_dtv_table[1].counter = max_tls_index;
+        new_dtv_table[1].counter = new_num_dtvs;
         delete[] dtv_table;
 
-        // Update TCB pointer.
         GetTcbBase()->tcb_dtv = new_dtv_table;
         dtv_table = new_dtv_table;
     }
 
+    const auto mod_it = m_tls_modules.find(static_cast<u32>(module_index));
+    if (mod_it == m_tls_modules.end() || module_index == 0 || module_index > dtv_table[1].counter) {
+        return nullptr;
+    }
+
     u8* addr = dtv_table[module_index + 1].pointer;
-    Module* module = m_modules[module_index - 1].get();
+    Module* module = mod_it->second;
     if (!addr) {
-        // Module was just loaded by above code. Allocate TLS block for it.
-        const u32 init_image_size = module->tls.init_image_size;
+        const size_t alloc_size = std::max<size_t>(1, module->tls.image_size);
         u8* dest{};
         if (heap_api && heap_api->heap_malloc) {
-            dest = reinterpret_cast<u8*>(heap_api->heap_malloc(module->tls.image_size));
+            dest = reinterpret_cast<u8*>(heap_api->heap_malloc(alloc_size));
         } else {
-            dest = reinterpret_cast<u8*>(std::malloc(module->tls.image_size));
+            dest = reinterpret_cast<u8*>(std::malloc(alloc_size));
         }
-        const u8* src = reinterpret_cast<const u8*>(module->tls.image_virtual_addr);
-        std::memcpy(dest, src, init_image_size);
-        std::memset(dest + init_image_size, 0, module->tls.image_size - init_image_size);
+        const u32 init_image_size = module->tls.init_image_size;
+        if (init_image_size > 0 && module->tls.image_virtual_addr != 0) {
+            const u8* src = reinterpret_cast<const u8*>(module->tls.image_virtual_addr);
+            std::memcpy(dest, src, init_image_size);
+        }
+        if (alloc_size > init_image_size) {
+            std::memset(dest + init_image_size, 0, alloc_size - init_image_size);
+        }
         dtv_table[module_index + 1].pointer = dest;
         addr = dest;
     }
@@ -556,8 +1032,11 @@ void Linker::DebugDump() {
     const auto& log_dir = Common::FS::GetUserPath(Common::FS::PathType::LogDir);
     const std::filesystem::path debug(log_dir / "debugdump");
     std::filesystem::create_directory(debug);
-    for (const auto& m : m_modules) {
-        Module* module = m.get();
+    for (const s32 handle : m_load_order) {
+        Module* module = GetModule(handle);
+        if (!module) {
+            continue;
+        }
         auto& elf = module->elf;
         const std::filesystem::path filepath(debug / module->file.stem());
         std::filesystem::create_directory(filepath);

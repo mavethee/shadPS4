@@ -444,11 +444,16 @@ struct elf_relocation {
     u64 rel_info;
     s64 rel_addend;
 };
+constexpr u32 R_X86_64_NONE = 0;
 constexpr u32 R_X86_64_64 = 1; // Direct 64 bit
+constexpr u32 R_X86_64_PC32 = 2;
+constexpr u32 R_X86_64_COPY = 5;
 constexpr u32 R_X86_64_GLOB_DAT = 6;
 constexpr u32 R_X86_64_JUMP_SLOT = 7; // Create PLT entry
 constexpr u32 R_X86_64_RELATIVE = 8;  // Adjust by program base
 constexpr u32 R_X86_64_DTPMOD64 = 16;
+constexpr u32 R_X86_64_DTPOFF64 = 17;
+constexpr u32 R_X86_64_TPOFF64 = 18;
 
 struct eh_frame_hdr {
     uint8_t version;
@@ -494,6 +499,12 @@ public:
     [[nodiscard]] bool IsSharedLib() const {
         return m_elf_header.e_type == ET_SCE_DYNAMIC;
     }
+
+    [[nodiscard]] bool IsExecutable() const {
+        return m_elf_header.e_type == ET_SCE_EXEC || m_elf_header.e_type == ET_SCE_DYNEXEC;
+    }
+
+    [[nodiscard]] bool ValidateProgramHeaders() const;
 
     std::string SElfHeaderStr();
     std::string SELFSegHeader(u16 no);

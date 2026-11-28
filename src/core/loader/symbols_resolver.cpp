@@ -10,8 +10,10 @@
 
 namespace Core::Loader {
 
-void SymbolsResolver::AddSymbol(const SymbolResolver& s, u64 virtual_addr) {
-    m_symbols.emplace_back(s, virtual_addr);
+void SymbolsResolver::AddSymbol(const SymbolResolver& s, u64 virtual_addr, bool is_weak) {
+    const size_t idx = m_symbols.size();
+    m_symbols.emplace_back(SymbolRecord{s, virtual_addr, is_weak});
+    m_name_index[s.name].push_back(idx);
 }
 
 std::string_view SymbolsResolver::SymbolTypeToS(SymbolType sym_type) {
@@ -32,14 +34,22 @@ std::string_view SymbolsResolver::SymbolTypeToS(SymbolType sym_type) {
 }
 
 const SymbolRecord* SymbolsResolver::FindSymbol(const SymbolResolver& s) const {
-    for (u32 i = 0; i < m_symbols.size(); i++) {
-        if (m_symbols[i].symbol == s) {
-            return &m_symbols[i];
+    const auto it = m_name_index.find(s.name);
+    if (it == m_name_index.end()) {
+        return nullptr;
+    }
+    const SymbolRecord* weak_match = nullptr;
+    for (const size_t idx : it->second) {
+        if (m_symbols[idx].symbol == s) {
+            if (!m_symbols[idx].is_weak) {
+                return &m_symbols[idx];
+            }
+            if (!weak_match) {
+                weak_match = &m_symbols[idx];
+            }
         }
     }
-
-    // LOG_INFO(Core_Linker, "Unresolved! {}", name);
-    return nullptr;
+    return weak_match;
 }
 
 void SymbolsResolver::DebugDump(const std::filesystem::path& file_name) {

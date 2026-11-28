@@ -383,8 +383,9 @@ s32 unloadModule(s32 id, s32 argc, const void* argv, s32* res_out, bool is_inter
     }
 
     // Unload the module and it's dependencies
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
     for (s64 i = 0; i < mod.num_to_load; i++) {
-        OrbisSysmoduleModuleInternal dep_mod = g_modules_array[mod.to_load[i]];
+        OrbisSysmoduleModuleInternal& dep_mod = g_modules_array[mod.to_load[i]];
         // If this is a debug module and we're not emulating a devkit, skip it.
         if ((dep_mod.flags & OrbisSysmoduleModuleInternalFlags::IsDebug) != 0 &&
             !EmulatorSettings.IsDevKit()) {
@@ -399,12 +400,12 @@ s32 unloadModule(s32 id, s32 argc, const void* argv, s32* res_out, bool is_inter
         // By this point, all necessary checks are performed, decrement the load count.
         dep_mod.is_loaded--;
 
-        // Normally, this is where the real library would actually unload the module,
-        // through a call to sceKernelStopUnloadModule.
-        // As we don't implement module unloading, this behavior is skipped.
-
-        // Stub success during requested module unload.
-        if (i == 0 && res_out != nullptr) {
+        if (dep_mod.is_loaded == 0 && dep_mod.handle > 0 &&
+            linker->GetModule(dep_mod.handle) != nullptr) {
+            Kernel::sceKernelStopUnloadModule(dep_mod.handle, 0, nullptr, 0, nullptr,
+                                              i == 0 ? res_out : nullptr);
+            dep_mod.handle = -1;
+        } else if (i == 0 && res_out != nullptr) {
             *res_out = ORBIS_OK;
         }
     }

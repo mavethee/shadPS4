@@ -60,7 +60,7 @@ static std::string EncodeId(u64 nVal) {
     return enc;
 }
 
-static std::string StringToNid(std::string_view symbol) {
+std::string Module::StringToNid(std::string_view symbol) {
     static constexpr std::array<u8, 16> Salt = {0x51, 0x8D, 0x64, 0xA6, 0x35, 0xDE, 0xD8, 0xC1,
                                                 0xE6, 0xB0, 0x39, 0xB1, 0xC3, 0xE5, 0x52, 0x30};
     std::vector<u8> input(symbol.size() + Salt.size());
@@ -89,6 +89,8 @@ static std::string StringToNid(std::string_view symbol) {
 Module::Module(Core::MemoryManager* memory_, const std::filesystem::path& file_,
                std::unique_ptr<Core::FileSys::IFile> handle, u32& max_tls_index, s32 id_)
     : id{id_}, memory{memory_}, file{file_}, name{file.filename().string()} {
+    const size_t copy_len = std::min(name.size(), info.name.size() - 1);
+    std::memcpy(info.name.data(), name.data(), copy_len);
     elf.Open(std::move(handle));
     if (elf.IsElfFile()) {
         LoadModuleToMemory(max_tls_index);
@@ -97,12 +99,54 @@ Module::Module(Core::MemoryManager* memory_, const std::filesystem::path& file_,
     }
 }
 
-Module::~Module() = default;
+Module::~Module() {
+    UnloadFromMemory();
+}
 
 s32 Module::Start(u64 args, const void* argp, void* param) {
     LOG_INFO(Core_Linker, "Module started : {}", name);
-    const VAddr addr = dynamic_info.init_virtual_addr + GetBaseAddress();
-    return reinterpret_cast<EntryFunc>(addr)(args, argp, param);
+    const VAddr base = GetBaseAddress();
+    s32 res = ORBIS_OK;
+    if (dynamic_info.has_init) {
+        const VAddr addr = base + dynamic_info.init_virtual_addr;
+        res = reinterpret_cast<EntryFunc>(addr)(args, argp, param);
+    } else if (void* mod_start = FindByNid("BaOKcng8g88")) {
+        res = reinterpret_cast<EntryFunc>(mod_start)(args, argp, param);
+    }
+    if (res >= 0) {
+        is_started = true;
+    }
+    return res;
+}
+
+s32 Module::Stop(u64 args, const void* argp, void* param) {
+    if (!is_started) {
+        return ORBIS_OK;
+    }
+    s32 res = ORBIS_OK;
+    const VAddr base = GetBaseAddress();
+    if (dynamic_info.has_fini) {
+        const VAddr addr = base + dynamic_info.fini_virtual_addr;
+        res = reinterpret_cast<EntryFunc>(addr)(args, argp, param);
+    } else if (void* mod_stop = FindByNid("KpDMrPHvt3Q")) {
+        res = reinterpret_cast<EntryFunc>(mod_stop)(args, argp, param);
+    }
+    is_started = false;
+    return res;
+}
+
+void Module::UnloadFromMemory() {
+    if (base_virtual_addr == 0) {
+        return;
+    }
+#ifdef ARCH_X86_64
+    UnregisterPatchModule(reinterpret_cast<void*>(base_virtual_addr));
+#endif
+    static constexpr u64 TrampolineSize = 8_MB;
+    if (memory != nullptr) {
+        memory->UnmapMemory(base_virtual_addr, aligned_base_size + TrampolineSize);
+    }
+    base_virtual_addr = 0;
 }
 
 void Module::LoadModuleToMemory(u32& max_tls_index) {
@@ -169,13 +213,29 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
                        segment_vaddr, name);
             elf.LoadSegment(segment_vaddr, phdr.p_offset, phdr.p_filesz);
         }
-        if (info.num_segments < 4) {
+        if (info.num_segments < SCE_DBG_MAX_SEGMENTS) {
             auto& segment = info.segments[info.num_segments++];
             segment.address = segment_vaddr;
             segment.prot = phdr.p_flags;
-            segment.size = segment_size;
+            segment.size = static_cast<u32>(segment_size);
         } else {
             LOG_ERROR(Core_Linker, "Attempting to add too many segments!");
+        }
+        if (phdr.p_type == PT_LOAD && ex_segment_count < SCE_DBG_MAX_SEGMENTS) {
+            bool duplicate_ex = false;
+            for (u32 s = 0; s < ex_segment_count; ++s) {
+                if (ex_segments[s].address == segment_vaddr &&
+                    ex_segments[s].size == segment_size) {
+                    duplicate_ex = true;
+                    break;
+                }
+            }
+            if (!duplicate_ex) {
+                auto& ex_seg = ex_segments[ex_segment_count++];
+                ex_seg.address = segment_vaddr;
+                ex_seg.prot = phdr.p_flags;
+                ex_seg.size = static_cast<u32>(segment_size);
+            }
         }
     };
 
@@ -223,7 +283,6 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
             break;
         }
         case PT_DYNAMIC:
-            add_segment(elf_pheader[i], false);
             if (elf_pheader[i].p_filesz != 0) {
                 m_dynamic.resize(elf_pheader[i].p_filesz);
                 const VAddr segment_addr = std::bit_cast<VAddr>(m_dynamic.data());
@@ -318,11 +377,11 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
                         if (colon != std::string_view::npos && colon + 5 <= rec_len) {
                             const u8* ver_bytes =
                                 reinterpret_cast<const u8*>(rec.data() + colon + 1);
-                            const u32 sdk_ver = (u32(ver_bytes[0]) << 24) |
-                                                (u32(ver_bytes[1]) << 16) |
-                                                (u32(ver_bytes[2]) << 8) | u32(ver_bytes[3]);
+                            const u32 ver = (u32(ver_bytes[0]) << 24) | (u32(ver_bytes[1]) << 16) |
+                                            (u32(ver_bytes[2]) << 8) | u32(ver_bytes[3]);
+                            sdk_version = ver;
                             LOG_INFO(Core_Linker, "SCE SDK version: {:x}.{:02x} [{:#010x}]",
-                                     ver_bytes[0], ver_bytes[1], sdk_ver);
+                                     ver_bytes[0], ver_bytes[1], ver);
                         }
                     }
                 }
@@ -444,42 +503,52 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
 }
 
 void Module::LoadDynamicInfo() {
-    for (const auto* dyn = reinterpret_cast<elf_dynamic*>(m_dynamic.data()); dyn->d_tag != DT_NULL;
-         dyn++) {
+    if (m_dynamic.empty()) {
+        return;
+    }
+    const u64 dyn_data_size = m_dynamic_data.size();
+    const auto dynlib_ptr = [&](u64 offset, u64 size = 1) -> u8* {
+        if (offset > dyn_data_size || size > dyn_data_size - offset) {
+            return nullptr;
+        }
+        return m_dynamic_data.data() + offset;
+    };
+    const auto* dyn_end = reinterpret_cast<const elf_dynamic*>(m_dynamic.data() + m_dynamic.size());
+    for (const auto* dyn = reinterpret_cast<const elf_dynamic*>(m_dynamic.data());
+         dyn < dyn_end && dyn->d_tag != DT_NULL; dyn++) {
         switch (dyn->d_tag) {
         case DT_SCE_HASH: // Offset of the hash table.
-            dynamic_info.hash_table =
-                reinterpret_cast<void*>(m_dynamic_data.data() + dyn->d_un.d_ptr);
+            dynamic_info.hash_table = dynlib_ptr(dyn->d_un.d_ptr);
             break;
         case DT_SCE_HASHSZ: // Size of the hash table
             dynamic_info.hash_table_size = dyn->d_un.d_val;
             break;
         case DT_SCE_STRTAB: // Offset of the string table.
-            dynamic_info.str_table =
-                reinterpret_cast<char*>(m_dynamic_data.data() + dyn->d_un.d_ptr);
+            dynamic_info.str_table = reinterpret_cast<char*>(dynlib_ptr(dyn->d_un.d_ptr));
             break;
         case DT_SCE_STRSZ: // Size of the string table.
             dynamic_info.str_table_size = dyn->d_un.d_val;
             break;
         case DT_SCE_SYMTAB: // Offset of the symbol table.
-            dynamic_info.symbol_table =
-                reinterpret_cast<elf_symbol*>(m_dynamic_data.data() + dyn->d_un.d_ptr);
+            dynamic_info.symbol_table = reinterpret_cast<elf_symbol*>(dynlib_ptr(dyn->d_un.d_ptr));
             break;
         case DT_SCE_SYMTABSZ: // Size of the symbol table.
             dynamic_info.symbol_table_total_size = dyn->d_un.d_val;
             break;
         case DT_INIT:
             dynamic_info.init_virtual_addr = dyn->d_un.d_ptr;
+            dynamic_info.has_init = true;
             break;
         case DT_FINI:
             dynamic_info.fini_virtual_addr = dyn->d_un.d_ptr;
+            dynamic_info.has_fini = true;
             break;
         case DT_SCE_PLTGOT: // Offset of the global offset table.
             dynamic_info.pltgot_virtual_addr = dyn->d_un.d_ptr;
             break;
         case DT_SCE_JMPREL: // Offset of the table containing jump slots.
             dynamic_info.jmp_relocation_table =
-                reinterpret_cast<elf_relocation*>(m_dynamic_data.data() + dyn->d_un.d_ptr);
+                reinterpret_cast<elf_relocation*>(dynlib_ptr(dyn->d_un.d_ptr));
             break;
         case DT_SCE_PLTRELSZ: // Size of the global offset table.
             dynamic_info.jmp_relocation_table_size = dyn->d_un.d_val;
@@ -492,7 +561,7 @@ void Module::LoadDynamicInfo() {
             break;
         case DT_SCE_RELA: // Offset of the relocation table.
             dynamic_info.relocation_table =
-                reinterpret_cast<elf_relocation*>(m_dynamic_data.data() + dyn->d_un.d_ptr);
+                reinterpret_cast<elf_relocation*>(dynlib_ptr(dyn->d_un.d_ptr));
             break;
         case DT_SCE_RELASZ: // Size of the relocation table.
             dynamic_info.relocation_table_size = dyn->d_un.d_val;
@@ -550,62 +619,81 @@ void Module::LoadDynamicInfo() {
             }
             break;
         case DT_SCE_NEEDED_MODULE: {
-            ModuleInfo& info = dynamic_info.import_modules.emplace_back();
-            info.value = dyn->d_un.d_val;
-            info.name = dynamic_info.str_table + info.name_offset;
-            info.enc_id = EncodeId(info.id);
+            ModuleInfo& mod_info = dynamic_info.import_modules.emplace_back();
+            mod_info.value = dyn->d_un.d_val;
+            if (dynamic_info.str_table && mod_info.name_offset < dynamic_info.str_table_size) {
+                mod_info.name = dynamic_info.str_table + mod_info.name_offset;
+            }
+            mod_info.enc_id = EncodeId(mod_info.id);
             break;
         }
         case DT_SCE_IMPORT_LIB: {
-            LibraryInfo& info = dynamic_info.import_libs.emplace_back();
-            info.value = dyn->d_un.d_val;
-            info.name = dynamic_info.str_table + info.name_offset;
-            info.enc_id = EncodeId(info.id);
+            LibraryInfo& lib_info = dynamic_info.import_libs.emplace_back();
+            lib_info.value = dyn->d_un.d_val;
+            if (dynamic_info.str_table && lib_info.name_offset < dynamic_info.str_table_size) {
+                lib_info.name = dynamic_info.str_table + lib_info.name_offset;
+            }
+            lib_info.enc_id = EncodeId(lib_info.id);
             break;
         }
         case DT_SCE_FINGERPRINT:
-            // The fingerprint is a 24 byte (0x18) size buffer that contains a unique identifier for
-            // the given app. How exactly this is generated isn't known, however it is not necessary
-            // to have a valid fingerprint. While an invalid fingerprint will cause a warning to be
-            // printed to the kernel log, the ELF will still load and run.
-            LOG_INFO(Core_Linker, "DT_SCE_FINGERPRINT value = {:#018x}", dyn->d_un.d_val);
-            std::memcpy(info.fingerprint.data(), &dyn->d_un.d_val, sizeof(SCE_DBG_NUM_FINGERPRINT));
+            LOG_INFO(Core_Linker, "DT_SCE_FINGERPRINT offset = {:#018x}", dyn->d_un.d_val);
+            if (const u8* fp = dynlib_ptr(dyn->d_un.d_val, SCE_DBG_NUM_FINGERPRINT)) {
+                std::memcpy(info.fingerprint.data(), fp, SCE_DBG_NUM_FINGERPRINT);
+            }
             break;
         case DT_SCE_IMPORT_LIB_ATTR:
-            // The upper 32-bits should contain the module index multiplied by 0x10000. The lower
-            // 32-bits should be a constant 0x9.
-            LOG_INFO(Core_Linker, "unsupported DT_SCE_IMPORT_LIB_ATTR value = ......: {:#018x}",
-                     dyn->d_un.d_val);
+            // Upper 32 bits: module index * 0x10000; lower 32 bits: attribute flags (0x9).
+            LOG_TRACE(Core_Linker, "DT_SCE_IMPORT_LIB_ATTR value = {:#018x}", dyn->d_un.d_val);
             break;
         case DT_SCE_ORIGINAL_FILENAME:
-            dynamic_info.filename = dynamic_info.str_table + dyn->d_un.d_val;
+            if (dynamic_info.str_table && dyn->d_un.d_val < dynamic_info.str_table_size) {
+                dynamic_info.filename = dynamic_info.str_table + dyn->d_un.d_val;
+            }
             break;
         case DT_SCE_MODULE_INFO: {
-            ModuleInfo& info = dynamic_info.export_modules.emplace_back();
-            info.value = dyn->d_un.d_val;
-            info.name = dynamic_info.str_table + info.name_offset;
-            info.enc_id = EncodeId(info.id);
-            const std::string full_name = info.name + ".sprx";
-            full_name.copy(this->info.name.data(), full_name.size());
+            ModuleInfo& mod_info = dynamic_info.export_modules.emplace_back();
+            mod_info.value = dyn->d_un.d_val;
+            if (dynamic_info.str_table && mod_info.name_offset < dynamic_info.str_table_size) {
+                mod_info.name = dynamic_info.str_table + mod_info.name_offset;
+            }
+            mod_info.enc_id = EncodeId(mod_info.id);
+            if (info.name[0] == '\0' && IsSharedLib() && !mod_info.name.empty()) {
+                const std::string full_name = mod_info.name + ".sprx";
+                const size_t n = std::min(full_name.size(), info.name.size() - 1);
+                std::memcpy(info.name.data(), full_name.data(), n);
+                info.name[n] = '\0';
+            }
             break;
-        };
+        }
         case DT_SCE_MODULE_ATTR:
-            LOG_INFO(Core_Linker, "unsupported DT_SCE_MODULE_ATTR value = ..........: {:#018x}",
-                     dyn->d_un.d_val);
+            LOG_TRACE(Core_Linker, "DT_SCE_MODULE_ATTR value = {:#018x}", dyn->d_un.d_val);
             break;
         case DT_SCE_EXPORT_LIB: {
-            LibraryInfo& info = dynamic_info.export_libs.emplace_back();
-            info.value = dyn->d_un.d_val;
-            info.name = dynamic_info.str_table + info.name_offset;
-            info.enc_id = EncodeId(info.id);
+            LibraryInfo& lib_info = dynamic_info.export_libs.emplace_back();
+            lib_info.value = dyn->d_un.d_val;
+            if (dynamic_info.str_table && lib_info.name_offset < dynamic_info.str_table_size) {
+                lib_info.name = dynamic_info.str_table + lib_info.name_offset;
+            }
+            lib_info.enc_id = EncodeId(lib_info.id);
             break;
         }
         default:
             LOG_INFO(Core_Linker, "unsupported dynamic tag ..........: {:#018x}", dyn->d_tag);
         }
     }
-    const u32 relabits_num = dynamic_info.relocation_table_size / sizeof(elf_relocation) +
-                             dynamic_info.jmp_relocation_table_size / sizeof(elf_relocation);
+    if (dynamic_info.str_table_size > 0 && !dynamic_info.str_table) {
+        dynamic_info.str_table_size = 0;
+    }
+    if (!dynlib_ptr(0, dynamic_info.relocation_table_size)) {
+        dynamic_info.relocation_table_size = 0;
+    }
+    if (!dynlib_ptr(0, dynamic_info.jmp_relocation_table_size)) {
+        dynamic_info.jmp_relocation_table_size = 0;
+    }
+    const u32 relabits_num =
+        static_cast<u32>(dynamic_info.relocation_table_size / sizeof(elf_relocation) +
+                         dynamic_info.jmp_relocation_table_size / sizeof(elf_relocation));
     rela_bits.resize((relabits_num + 7) / 8);
 }
 
@@ -620,6 +708,9 @@ void Module::LoadSymbols() {
              reinterpret_cast<u8*>(sym) < reinterpret_cast<u8*>(dynamic_info.symbol_table) +
                                               dynamic_info.symbol_table_total_size;
              sym++) {
+            if (sym->st_name >= dynamic_info.str_table_size) {
+                continue;
+            }
             const u8 bind = sym->GetBind();
             const u8 type = sym->GetType();
             const u8 visibility = sym->GetVisibility();
@@ -633,7 +724,11 @@ void Module::LoadSymbols() {
             const auto* module = FindModule(ids[2]);
             ASSERT_MSG(library && module, "Unable to find library and module");
             if ((bind != STB_GLOBAL && bind != STB_WEAK) ||
-                (type != STT_FUN && type != STT_OBJECT) || export_func != (sym->st_value != 0)) {
+                (type != STT_FUN && type != STT_OBJECT && type != STT_TLS) ||
+                export_func != (sym->st_value != 0 || sym->st_shndx != 0)) {
+                continue;
+            }
+            if (export_func && (visibility == STV_HIDDEN || visibility == STV_INTERNAL)) {
                 continue;
             }
 
@@ -656,16 +751,38 @@ void Module::LoadSymbols() {
             case STT_OBJECT:
                 sym_r.type = Loader::SymbolType::Object;
                 break;
+            case STT_TLS:
+                sym_r.type = Loader::SymbolType::Tls;
+                break;
             default:
                 sym_r.type = Loader::SymbolType::Unknown;
                 break;
             }
-            const VAddr sym_addr = export_func ? sym->st_value + base_virtual_addr : 0;
-            symbol.AddSymbol(sym_r, sym_addr);
+            const VAddr sym_addr =
+                export_func ? (type == STT_TLS ? sym->st_value : sym->st_value + base_virtual_addr)
+                            : 0;
+            symbol.AddSymbol(sym_r, sym_addr, bind == STB_WEAK);
         }
     };
     symbol_database(export_sym, true);
     symbol_database(import_sym, false);
+}
+
+bool Module::ContainsSegmentAddress(VAddr addr, u32 flags) const {
+    if (flags == 1) {
+        return ex_segment_count > 0 && addr >= ex_segments[0].address &&
+               addr < ex_segments[0].address + ex_segments[0].size;
+    }
+    if (flags == 2) {
+        for (u32 i = 1; i < ex_segment_count; ++i) {
+            if (addr >= ex_segments[i].address &&
+                addr < ex_segments[i].address + ex_segments[i].size) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
 }
 
 OrbisKernelModuleInfoEx Module::GetModuleInfoEx() const {
@@ -678,14 +795,17 @@ OrbisKernelModuleInfoEx Module::GetModuleInfoEx() const {
         .tls_size = tls.image_size,
         .tls_offset = tls.offset,
         .tls_align = tls.align,
-        .init_proc_addr = base_virtual_addr + dynamic_info.init_virtual_addr,
-        .fini_proc_addr = base_virtual_addr + dynamic_info.fini_virtual_addr,
+        .init_proc_addr =
+            dynamic_info.has_init ? base_virtual_addr + dynamic_info.init_virtual_addr : 0,
+        .fini_proc_addr =
+            dynamic_info.has_fini ? base_virtual_addr + dynamic_info.fini_virtual_addr : 0,
         .eh_frame_hdr_addr = base_virtual_addr + eh_frame_hdr_addr,
         .eh_frame_addr = base_virtual_addr + eh_frame_addr,
         .eh_frame_hdr_size = eh_frame_hdr_size,
         .eh_frame_size = eh_frame_size,
-        .segments = info.segments,
-        .segment_count = info.num_segments,
+        .segments = ex_segments,
+        .segment_count = ex_segment_count,
+        .ref_count = ref_count,
     };
 }
 

@@ -104,39 +104,15 @@ void* PS4_SYSV_ABI sceKernelGetProcParam() {
 
 s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp,
                                           u32 flags, const void* pOpt, s32* pRes) {
-    if (moduleFileName == nullptr || flags != 0) {
+    if (moduleFileName == nullptr || flags != 0 || pOpt != nullptr) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     LOG_INFO(Lib_Kernel, "called filename = {}, args = {}", moduleFileName, args);
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-
-    std::string guest_path(moduleFileName);
-
-    s32 handle = -1;
-
-    if (guest_path[0] == '/') {
-        // try load /system/common/lib/ +path
-        // try load /system/priv/lib/   +path
-        handle = linker->LoadAndStartModule(guest_path, args, argp, pRes);
-        if (handle != -1)
-            return handle;
-    } else {
-        if (!guest_path.contains('/')) {
-            handle = linker->LoadAndStartModule("/app0/" + guest_path, args, argp, pRes);
-            if (handle != -1)
-                return handle;
-            // if ((flags & 0x10000) != 0)
-            //  try load /system/priv/lib/   +basename
-            //  try load /system/common/lib/ +basename
-        } else {
-            handle = linker->LoadAndStartModule(guest_path, args, argp, pRes);
-            if (handle != -1)
-                return handle;
-        }
-    }
-
-    return ORBIS_KERNEL_ERROR_ENOENT;
+    s32 err = ORBIS_OK;
+    const s32 handle = linker->LoadAndStartModule(moduleFileName, args, argp, pRes, &err);
+    return handle != -1 ? handle : err;
 }
 
 s32 PS4_SYSV_ABI sceKernelStopUnloadModule(s32 handle, u64 args, const void* argp, u32 flags,
@@ -145,38 +121,26 @@ s32 PS4_SYSV_ABI sceKernelStopUnloadModule(s32 handle, u64 args, const void* arg
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-    if (linker == nullptr || linker->GetModule(handle) == nullptr) {
+    if (linker == nullptr) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    LOG_WARNING(Lib_Kernel, "(STUBBED) handle = {:#x}", handle);
-    if (pRes) {
-        *pRes = 0;
-    }
-    return ORBIS_OK;
+    return linker->StopUnloadModule(handle, args, argp, pRes);
 }
 
 s32 PS4_SYSV_ABI sceKernelDlsym(s32 handle, const char* symbol, void** addrp) {
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-    auto* module = linker->GetModule(handle);
-    if (module == nullptr) {
+    if (linker == nullptr) {
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
-    *addrp = module->FindByName(symbol);
-    if (*addrp == nullptr) {
-        *addrp = module->FindByNid(symbol);
-    }
-    LOG_DEBUG(Lib_Kernel, "handle = {}, symbol = '{}', resolved = {}", handle,
-              symbol ? symbol : "null", fmt::ptr(*addrp));
-    if (*addrp == nullptr) {
-        return ORBIS_KERNEL_ERROR_ESRCH;
-    }
-    return ORBIS_OK;
+    return linker->Dlsym(handle, symbol, addrp);
 }
 
 s32 PS4_SYSV_ABI sceKernelGetModuleInfoForUnwind(VAddr addr, s32 flags,
                                                  OrbisModuleInfoForUnwind* info) {
-    if (flags >= 3) {
-        std::memset(info, 0, sizeof(OrbisModuleInfoForUnwind));
+    if (flags != 1 && flags != 2) {
+        if (info != nullptr) {
+            std::memset(info, 0, sizeof(OrbisModuleInfoForUnwind));
+        }
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
     if (!info) {
@@ -186,16 +150,15 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoForUnwind(VAddr addr, s32 flags,
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
-    // Find module that contains specified address.
     LOG_INFO(Lib_Kernel, "called addr = {:#x}, flags = {:#x}", addr, flags);
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-    auto* module = linker->FindByAddress(addr);
+    auto* module = linker->FindByAddress(addr, flags);
     if (!module) {
+        std::memset(info, 0, sizeof(OrbisModuleInfoForUnwind));
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
     const auto mod_info = module->GetModuleInfoEx();
 
-    // Fill in module info.
     std::memset(info, 0, sizeof(OrbisModuleInfoForUnwind));
     info->name = mod_info.name;
     info->eh_frame_hdr_addr = mod_info.eh_frame_hdr_addr;
@@ -208,25 +171,44 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoForUnwind(VAddr addr, s32 flags,
 
 s32 PS4_SYSV_ABI sceKernelGetModuleInfoFromAddr(VAddr addr, s32 flags,
                                                 Core::OrbisKernelModuleInfoEx* info) {
-    if (flags >= 3) {
-        std::memset(info, 0, sizeof(Core::OrbisKernelModuleInfoEx));
-        return ORBIS_KERNEL_ERROR_EINVAL;
-    }
     if (info == nullptr) {
         return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    if (flags != 1 && flags != 2) {
+        std::memset(info, 0, sizeof(Core::OrbisKernelModuleInfoEx));
+        return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
     LOG_DEBUG(Lib_Kernel,
               "called addr = {:#x}, flags = {:#x}, caller = {:p}, info = {:p}, st_size = {:#x}",
               addr, flags, __builtin_return_address(0), static_cast<void*>(info), info->st_size);
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-    auto* module = linker->FindByAddress(addr);
+    auto* module = linker->FindByAddress(addr, flags);
     if (!module) {
+        std::memset(info, 0, sizeof(Core::OrbisKernelModuleInfoEx));
         return ORBIS_KERNEL_ERROR_ESRCH;
     }
 
     *info = module->GetModuleInfoEx();
     return ORBIS_OK;
+}
+
+static Core::OrbisKernelModuleInfo MakeSyntheticLibKernelInfo() {
+    Core::OrbisKernelModuleInfo info{};
+    constexpr std::string_view kName = "libkernel.sprx";
+    std::memcpy(info.name.data(), kName.data(), kName.size());
+    info.num_segments = 2;
+    return info;
+}
+
+static Core::OrbisKernelModuleInfoEx MakeSyntheticLibKernelInfoEx() {
+    Core::OrbisKernelModuleInfoEx info{};
+    constexpr std::string_view kName = "libkernel.sprx";
+    std::memcpy(info.name.data(), kName.data(), kName.size());
+    info.id = Core::Linker::LibKernelHandle;
+    info.segment_count = 2;
+    info.ref_count = 1;
+    return info;
 }
 
 s32 PS4_SYSV_ABI sceKernelGetModuleInfo(s32 handle, Core::OrbisKernelModuleInfo* info) {
@@ -235,6 +217,10 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfo(s32 handle, Core::OrbisKernelModuleInfo*
     }
     if (info->st_size != sizeof(Core::OrbisKernelModuleInfo)) {
         return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    if (handle == Core::Linker::LibKernelHandle) {
+        *info = MakeSyntheticLibKernelInfo();
+        return ORBIS_OK;
     }
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
@@ -252,6 +238,9 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfo2(s32 handle, Core::OrbisKernelModuleInfo
     }
     if (info->st_size != sizeof(Core::OrbisKernelModuleInfo)) {
         return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    if (handle == Core::Linker::LibKernelHandle) {
+        return ORBIS_KERNEL_ERROR_EPERM;
     }
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
@@ -273,6 +262,10 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoInternal(s32 handle, Core::OrbisKernelMod
     if (info->st_size != sizeof(Core::OrbisKernelModuleInfoEx)) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
+    if (handle == Core::Linker::LibKernelHandle) {
+        *info = MakeSyntheticLibKernelInfoEx();
+        return ORBIS_OK;
+    }
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
     auto* module = linker->GetModule(handle);
@@ -283,51 +276,75 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoInternal(s32 handle, Core::OrbisKernelMod
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceKernelGetModuleList(s32* handles, u64 num_array, u64* out_count) {
-    if (out_count == nullptr || (handles == nullptr && num_array > 0)) {
-        return ORBIS_KERNEL_ERROR_EFAULT;
-    }
-
-    auto* linker = Common::Singleton<Core::Linker>::Instance();
-    u64 count = 0;
-    auto* module = linker->GetModule(count);
-    while (module != nullptr && count < num_array) {
-        handles[count] = count;
-        count++;
-        module = linker->GetModule(count);
-    }
-
-    if (count == num_array && module != nullptr) {
-        return ORBIS_KERNEL_ERROR_ENOMEM;
-    }
-
-    *out_count = count;
-    return ORBIS_OK;
-}
-
 s32 PS4_SYSV_ABI sceKernelGetModuleList2(s32* handles, u64 num_array, u64* out_count) {
     if (out_count == nullptr || (handles == nullptr && num_array > 0)) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
-    u64 id = 0;
-    u64 index = 0;
-    auto* module = linker->GetModule(id);
-    while (module != nullptr && index < num_array) {
-        if (!module->IsSystemLib()) {
-            handles[index++] = id;
+    std::vector<s32> matched;
+    for (const s32 id : linker->GetModuleOrder()) {
+        auto* module = linker->GetModule(id);
+        if (module && !module->IsSystemLib()) {
+            matched.push_back(id);
         }
-        id++;
-        module = linker->GetModule(id);
     }
 
-    if (index == num_array && module != nullptr) {
+    if (matched.size() > num_array) {
         return ORBIS_KERNEL_ERROR_ENOMEM;
     }
-
-    *out_count = index;
+    for (size_t i = 0; i < matched.size(); ++i) {
+        handles[i] = matched[i];
+    }
+    *out_count = matched.size();
     return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetModuleListInternal(s32* handles, u64 num_array, u64* out_count) {
+    if (out_count == nullptr || (handles == nullptr && num_array > 0)) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
+    std::vector<s32> matched;
+    const auto& order = linker->GetModuleOrder();
+    matched.reserve(order.size() + 1);
+    for (size_t i = 0; i < order.size(); ++i) {
+        matched.push_back(order[i]);
+        if (i == 0) {
+            matched.push_back(Core::Linker::LibKernelHandle);
+        }
+    }
+
+    if (matched.size() > num_array) {
+        return ORBIS_KERNEL_ERROR_ENOMEM;
+    }
+    for (size_t i = 0; i < matched.size(); ++i) {
+        handles[i] = matched[i];
+    }
+    *out_count = matched.size();
+    return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetModuleList(s32* handles, u64 num_array, u64* out_count) {
+    s32 sdk_ver = 0;
+    if (sceKernelGetCompiledSdkVersion(&sdk_ver) == ORBIS_OK &&
+        sdk_ver >= static_cast<s32>(Common::ElfInfo::FW_500)) {
+        return sceKernelGetModuleList2(handles, num_array, out_count);
+    }
+    return sceKernelGetModuleListInternal(handles, num_array, out_count);
+}
+
+s32 PS4_SYSV_ABI sceKernelIsModuleLoaded(const char* name) {
+    if (name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
+    return linker->FindByGuestOrBaseName(name) != -1 ? ORBIS_OK : ORBIS_KERNEL_ERROR_ESRCH;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetExecutableModuleHandle() {
+    return 0;
 }
 
 u32 PS4_SYSV_ABI posix_getuid() {
@@ -407,8 +424,15 @@ void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("QgsKEUfkqMA", "libkernel_module_info", 1, "libkernel", sceKernelGetModuleInfo2);
     LIB_FUNCTION("HZO7xOos4xc", "libkernel", 1, "libkernel", sceKernelGetModuleInfoInternal);
     LIB_FUNCTION("IuxnUuXk6Bg", "libkernel", 1, "libkernel", sceKernelGetModuleList);
+    LIB_FUNCTION("u+mlUkWpU3Y", "libkernel", 1, "libkernel", sceKernelGetModuleListInternal);
     LIB_FUNCTION("ZzzC3ZGVAkc", "libkernel", 1, "libkernel", sceKernelGetModuleList2);
     LIB_FUNCTION("ZzzC3ZGVAkc", "libkernel_module_info", 1, "libkernel", sceKernelGetModuleList2);
+    LIB_FUNCTION("21+rb7xOlJk", "libkernel", 1, "libkernel", sceKernelIsModuleLoaded);
+    LIB_FUNCTION("21+rb7xOlJk", "libkernel_module_load_check", 1, "libkernel",
+                 sceKernelIsModuleLoaded);
+    LIB_FUNCTION("wJABa1X4+ec", "libkernel", 1, "libkernel", sceKernelGetExecutableModuleHandle);
+    LIB_FUNCTION("wJABa1X4+ec", "libkernel_jvm", 1, "libkernel",
+                 sceKernelGetExecutableModuleHandle);
     LIB_FUNCTION("kg4x8Prhfxw", "libkernel", 1, "libkernel", posix_getuid);
     LIB_FUNCTION("6Z83sYWFlA8", "libkernel", 1, "libkernel", exit);
 }

@@ -226,6 +226,12 @@ void Elf::Open(std::unique_ptr<Core::FileSys::IFile> handle) {
 
     load_headers(m_elf_phdr, elf_header_pos + m_elf_header.e_phoff, m_elf_header.e_phnum);
     load_headers(m_elf_shdr, elf_header_pos + m_elf_header.e_shoff, m_elf_header.e_shnum);
+    if (!ValidateProgramHeaders()) {
+        m_elf_header = {};
+        m_elf_phdr.clear();
+        m_elf_shdr.clear();
+        return;
+    }
 
     if (is_self) {
         u64 header_size = 0;
@@ -337,6 +343,64 @@ bool Elf::IsElfFile() const {
         return false;
     }
 
+    return true;
+}
+
+bool Elf::ValidateProgramHeaders() const {
+    if (m_elf_phdr.size() != m_elf_header.e_phnum) {
+        return false;
+    }
+
+    const u64 file_size = m_f.GetSize();
+    u32 tls_count = 0;
+    for (const auto& ph : m_elf_phdr) {
+        switch (ph.p_type) {
+        case PT_LOAD:
+        case PT_SCE_RELRO:
+            if (ph.p_filesz > ph.p_memsz) {
+                LOG_ERROR(Loader, "Invalid segment p_filesz ({:#x}) > p_memsz ({:#x})", ph.p_filesz,
+                          ph.p_memsz);
+                return false;
+            }
+            if (ph.p_align != 0 && (ph.p_align & (ph.p_align - 1)) != 0) {
+                LOG_ERROR(Loader, "Invalid non-power-of-two p_align ({:#x})", ph.p_align);
+                return false;
+            }
+            if (!is_self && ph.p_filesz > 0 &&
+                (ph.p_offset > file_size || ph.p_filesz > file_size - ph.p_offset)) {
+                LOG_ERROR(Loader,
+                          "Segment exceeds ELF file bounds (off={:#x}, fsz={:#x}, sz={:#x})",
+                          ph.p_offset, ph.p_filesz, file_size);
+                return false;
+            }
+            break;
+        case PT_TLS:
+            if (++tls_count > 1) {
+                LOG_ERROR(Loader, "Multiple PT_TLS segments are invalid");
+                return false;
+            }
+            if (ph.p_filesz > ph.p_memsz) {
+                LOG_ERROR(Loader, "Invalid PT_TLS p_filesz ({:#x}) > p_memsz ({:#x})", ph.p_filesz,
+                          ph.p_memsz);
+                return false;
+            }
+            if (ph.p_align != 0 && (ph.p_align & (ph.p_align - 1)) != 0) {
+                LOG_ERROR(Loader, "Invalid PT_TLS p_align ({:#x})", ph.p_align);
+                return false;
+            }
+            break;
+        case PT_DYNAMIC:
+        case PT_SCE_DYNLIBDATA:
+            if (!is_self && ph.p_filesz > 0 &&
+                (ph.p_offset > file_size || ph.p_filesz > file_size - ph.p_offset)) {
+                LOG_ERROR(Loader, "Dynamic metadata exceeds file bounds");
+                return false;
+            }
+            break;
+        default:
+            break;
+        }
+    }
     return true;
 }
 
@@ -485,8 +549,16 @@ void Elf::LoadSegment(u64 virtual_addr, u64 file_offset, u64 size) {
 }
 
 bool Elf::TryLoadSegment(u64 virtual_addr, u64 file_offset, u64 size) {
+    if (size == 0) {
+        return true;
+    }
     if (!is_self) {
-        // It's elf file
+        const u64 file_size = m_f.GetSize();
+        if (file_offset > file_size || size > file_size - file_offset) {
+            LOG_CRITICAL(Loader, "ELF read out of bounds (off={:#x}, sz={:#x}, fsz={:#x})",
+                         file_offset, size, file_size);
+            return false;
+        }
         if (!m_f.Seek(file_offset, SeekOrigin::SetOrigin)) {
             LOG_CRITICAL(Loader, "Failed to seek to ELF header");
             return false;
@@ -499,11 +571,19 @@ bool Elf::TryLoadSegment(u64 virtual_addr, u64 file_offset, u64 size) {
         const auto& seg = m_self_segments[i];
 
         if (seg.IsBlocked()) {
-            auto phdr_id = seg.GetId();
+            const auto phdr_id = seg.GetId();
+            if (phdr_id >= m_elf_phdr.size()) {
+                continue;
+            }
             const auto& phdr = m_elf_phdr[phdr_id];
 
-            if (file_offset >= phdr.p_offset && file_offset < phdr.p_offset + phdr.p_filesz) {
-                auto offset = file_offset - phdr.p_offset;
+            if (file_offset >= phdr.p_offset && file_offset - phdr.p_offset <= phdr.p_filesz &&
+                size <= phdr.p_filesz - (file_offset - phdr.p_offset)) {
+                const auto offset = file_offset - phdr.p_offset;
+                if (offset > seg.file_size || size > seg.file_size - offset) {
+                    LOG_CRITICAL(Loader, "SELF segment read out of bounds");
+                    return false;
+                }
                 if (!m_f.Seek(offset + seg.file_offset, SeekOrigin::SetOrigin)) {
                     LOG_CRITICAL(Loader, "Failed to seek to segment");
                     return false;

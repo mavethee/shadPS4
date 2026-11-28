@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "common/assert.h"
 #include "common/types.h"
@@ -33,6 +34,7 @@ struct SymbolResolver {
 struct SymbolRecord {
     SymbolResolver symbol;
     u64 virtual_address;
+    bool is_weak{false};
 };
 
 class SymbolsResolver {
@@ -40,7 +42,7 @@ public:
     SymbolsResolver() = default;
     virtual ~SymbolsResolver() = default;
 
-    void AddSymbol(const SymbolResolver& s, u64 virtual_addr);
+    void AddSymbol(const SymbolResolver& s, u64 virtual_addr, bool is_weak = false);
     const SymbolRecord* FindSymbol(const SymbolResolver& s) const;
 
     void DebugDump(const std::filesystem::path& file_name);
@@ -57,6 +59,7 @@ public:
 
 private:
     std::vector<SymbolRecord> m_symbols;
+    std::unordered_map<std::string, std::vector<size_t>> m_name_index;
 };
 
 } // namespace Core::Loader

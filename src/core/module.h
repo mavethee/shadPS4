@@ -50,7 +50,10 @@ struct OrbisKernelModuleInfoEx {
     u32 eh_frame_size;
     std::array<OrbisKernelModuleSegmentInfo, SCE_DBG_MAX_SEGMENTS> segments;
     u32 segment_count;
+    u32 ref_count;
 };
+static_assert(sizeof(OrbisKernelModuleInfo) == 0x160);
+static_assert(sizeof(OrbisKernelModuleInfoEx) == 0x1a8);
 
 struct ModuleInfo {
     bool operator==(const ModuleInfo& other) const {
@@ -126,6 +129,8 @@ struct DynamicModuleInfo {
     u64 debug = 0;
     u64 textrel = 0;
     u64 flags = 0;
+    bool has_init = false;
+    bool has_fini = false;
 
     std::vector<const char*> needed;
     std::vector<ModuleInfo> import_modules;
@@ -217,9 +222,23 @@ public:
     }
 
     s32 Start(u64 args, const void* argp, void* param);
+    s32 Stop(u64 args, const void* argp, void* param);
     void LoadModuleToMemory(u32& max_tls_index);
+    void UnloadFromMemory();
     void LoadDynamicInfo();
     void LoadSymbols();
+    static std::string StringToNid(std::string_view symbol);
+
+    [[nodiscard]] bool ContainsSegmentAddress(VAddr addr, u32 flags) const;
+    [[nodiscard]] u32 GetRefCount() const noexcept {
+        return ref_count;
+    }
+    u32 AddRef() noexcept {
+        return ++ref_count;
+    }
+    u32 ReleaseRef() noexcept {
+        return ref_count > 0 ? --ref_count : 0;
+    }
 
     void* FindByName(std::string_view name);
     void* FindByNid(std::string_view nid);
@@ -234,12 +253,16 @@ public:
     std::string name;
     Loader::Elf elf;
     s32 id{};
+    u32 ref_count{1};
+    bool is_started{false};
+    std::vector<s32> dependencies;
     u64 aligned_base_size{};
     VAddr base_virtual_addr{};
     VAddr proc_param_virtual_addr{};
     VAddr module_param_virtual_addr{};
     std::string interpreter_path{};
     std::string comment{};
+    u32 sdk_version{};
     VAddr eh_frame_hdr_addr{};
     VAddr eh_frame_addr{};
     u32 eh_frame_hdr_size{};
@@ -251,6 +274,8 @@ public:
     Loader::SymbolsResolver import_sym;
     ThreadLocalImage tls{};
     OrbisKernelModuleInfo info{};
+    std::array<OrbisKernelModuleSegmentInfo, SCE_DBG_MAX_SEGMENTS> ex_segments{};
+    u32 ex_segment_count{};
     std::vector<u8> rela_bits;
 };
 

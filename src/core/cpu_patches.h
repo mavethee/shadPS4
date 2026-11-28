@@ -76,6 +76,9 @@ struct RedZonePatchResult {
 void RegisterPatchModule(void* module_ptr, u64 module_size, void* trampoline_area_ptr,
                          u64 trampoline_area_size);
 
+/// Unregisters a previously registered module on unload.
+void UnregisterPatchModule(void* module_ptr);
+
 /// Fixed-point bit shift for guest TSC frequency scaling factor (4.60 fixed-point).
 constexpr u32 GuestTscMultiplierShift = 60;
 
