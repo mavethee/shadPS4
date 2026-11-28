@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstring>
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/cpu_patches.h"
@@ -103,8 +104,10 @@ void* PS4_SYSV_ABI sceKernelGetProcParam() {
 
 s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, const void* argp,
                                           u32 flags, const void* pOpt, s32* pRes) {
+    if (moduleFileName == nullptr || flags != 0) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
     LOG_INFO(Lib_Kernel, "called filename = {}, args = {}", moduleFileName, args);
-    ASSERT(flags == 0);
 
     auto* linker = Common::Singleton<Core::Linker>::Instance();
 
@@ -138,7 +141,14 @@ s32 PS4_SYSV_ABI sceKernelLoadStartModule(const char* moduleFileName, u64 args, 
 
 s32 PS4_SYSV_ABI sceKernelStopUnloadModule(s32 handle, u64 args, const void* argp, u32 flags,
                                            const void* pOpt, s32* pRes) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) handle = {:#x}", handle);
+    if (handle == 0 || flags != 0 || pOpt != nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    auto* linker = Common::Singleton<Core::Linker>::Instance();
+    if (linker == nullptr || linker->GetModule(handle) == nullptr) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
+    }
+    LOG_WARNING(Lib_Kernel, "(STUBBED) handle = {:#x}", handle);
     if (pRes) {
         *pRes = 0;
     }
@@ -274,7 +284,7 @@ s32 PS4_SYSV_ABI sceKernelGetModuleInfoInternal(s32 handle, Core::OrbisKernelMod
 }
 
 s32 PS4_SYSV_ABI sceKernelGetModuleList(s32* handles, u64 num_array, u64* out_count) {
-    if (handles == nullptr || out_count == nullptr) {
+    if (out_count == nullptr || (handles == nullptr && num_array > 0)) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
@@ -296,7 +306,7 @@ s32 PS4_SYSV_ABI sceKernelGetModuleList(s32* handles, u64 num_array, u64* out_co
 }
 
 s32 PS4_SYSV_ABI sceKernelGetModuleList2(s32* handles, u64 num_array, u64* out_count) {
-    if (handles == nullptr || out_count == nullptr) {
+    if (out_count == nullptr || (handles == nullptr && num_array > 0)) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
@@ -329,15 +339,49 @@ s32 PS4_SYSV_ABI exit(s32 status) {
     return 0;
 }
 
-s32 PS4_SYSV_ABI sceKernelSetProcessProperty(u32 prop_type, const void* prop_data, size_t prop_size,
-                                             u64 unk1, u64 unk2) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) type = {:#x}, size = {}", prop_type, prop_size);
+constexpr s32 ORBIS_KERNEL_ERROR_MDBG_UNAVAILABLE = static_cast<s32>(0x8001ffff);
+
+s32 PS4_SYSV_ABI sceKernelSetProcessName(const char* name) {
+    if (name == nullptr) {
+        return ORBIS_OK;
+    }
+    if (std::strlen(name) >= 32) {
+        return ORBIS_KERNEL_ERROR_ENAMETOOLONG;
+    }
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI sceKernelGetProcessName(s32 pid, char* name) {
+    return ORBIS_KERNEL_ERROR_ESRCH;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetThreadName(u32 tid, char* name) {
+    return ORBIS_KERNEL_ERROR_ESRCH;
+}
+
+s32 PS4_SYSV_ABI sceKernelSetProcessProperty(const char* prop_name, u64 prop_data, size_t prop_size,
+                                             u64 unk1, u64 unk2) {
+    if (prop_name == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    // Retail mdbg_service rejects process property updates with 0x8001ffff.
+    return ORBIS_KERNEL_ERROR_MDBG_UNAVAILABLE;
+}
+
+s32 PS4_SYSV_ABI sceKernelSetProcessPropertyString(const char* prop_name, const char* prop_value) {
+    if (prop_name == nullptr || prop_value == nullptr) {
+        return ORBIS_KERNEL_ERROR_EINVAL;
+    }
+    return ORBIS_KERNEL_ERROR_MDBG_UNAVAILABLE;
+}
+
 void RegisterProcess(Core::Loader::SymbolsResolver* sym) {
+    LIB_FUNCTION("8UVYwy0F2Hk", "libkernel", 1, "libkernel", sceKernelSetProcessName);
+    LIB_FUNCTION("fUJRLEbJOuQ", "libkernel", 1, "libkernel", sceKernelGetProcessName);
+    LIB_FUNCTION("4vkZwDJbMx0", "libkernel", 1, "libkernel", sceKernelGetThreadName);
     LIB_FUNCTION("-W4xI5aVI8w", "libkernel", 1, "libkernel", sceKernelSetProcessProperty);
     LIB_FUNCTION("-W4xI5aVI8w", "libkernel_psmkit", 1, "libkernel", sceKernelSetProcessProperty);
+    LIB_FUNCTION("U5HG6wD4smU", "libkernel", 1, "libkernel", sceKernelSetProcessPropertyString);
     LIB_FUNCTION("xeu-pV8wkKs", "libkernel", 1, "libkernel", sceKernelIsInSandbox);
     LIB_FUNCTION("WB66evu8bsU", "libkernel", 1, "libkernel", sceKernelGetCompiledSdkVersion);
     LIB_FUNCTION("WslcK1FQcGI", "libkernel", 1, "libkernel", sceKernelIsNeoMode);

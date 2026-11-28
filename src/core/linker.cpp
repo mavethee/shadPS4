@@ -205,11 +205,21 @@ void Linker::Execute(const std::vector<std::string>& args) {
 
         // Add all guest arguments, we will always have the executable path in argv[0]
         EntryParams& params = Libraries::Kernel::entry_params;
-        constexpr int MaxArgs = sizeof(params.argv) / sizeof(params.argv[0]);
+        constexpr int MaxArgs = 33;
         params.argc = std::min<int>(args.size(), MaxArgs);
         for (int i = 0; i < params.argc; i++) {
             params.argv[i] = args[i].c_str();
         }
+        // Provide empty envp followed by AT_PAGESZ (6) and AT_SECURE (23) auxv entries.
+        int tail = params.argc;
+        params.argv[tail++] = nullptr;
+        params.argv[tail++] = nullptr;
+        params.argv[tail++] = reinterpret_cast<const char*>(uintptr_t{6});
+        params.argv[tail++] = reinterpret_cast<const char*>(uintptr_t{0x4000});
+        params.argv[tail++] = reinterpret_cast<const char*>(uintptr_t{23});
+        params.argv[tail++] = reinterpret_cast<const char*>(uintptr_t{1});
+        params.argv[tail++] = nullptr;
+        params.argv[tail++] = nullptr;
 
         // Run the game's entry function
         params.entry_addr = module->GetEntryAddress();

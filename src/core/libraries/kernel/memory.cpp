@@ -6,6 +6,7 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 #include <fmt/format.h>
 
@@ -939,6 +940,85 @@ s32 PS4_SYSV_ABI sceKernelReleaseFlexibleMemory(void* addr, u64 len) {
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI posix_madvise(void* addr, u64 len, s32 behav) {
+    if (addr == nullptr || behav < 0 || behav > 10) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    const VAddr raw_addr = reinterpret_cast<VAddr>(addr);
+    if (raw_addr + len < raw_addr) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    const u64 page_size = static_cast<u64>(std::max<long>(sysconf(_SC_PAGESIZE), 4096));
+    if (behav == 5) {
+#ifdef MADV_FREE
+        // Restrict destructive MADV_FREE to whole host pages and ignore EINVAL on MAP_SHARED dmem.
+        const VAddr start = Common::AlignUp(raw_addr, page_size);
+        const VAddr end = Common::AlignDown(raw_addr + len, page_size);
+        if (end > start) {
+            madvise(reinterpret_cast<void*>(start), end - start, MADV_FREE);
+        }
+#endif
+        return 0;
+    }
+
+    int host_behav = -1;
+    switch (behav) {
+    case 0:
+        host_behav = MADV_NORMAL;
+        break;
+    case 1:
+        host_behav = MADV_RANDOM;
+        break;
+    case 2:
+        host_behav = MADV_SEQUENTIAL;
+        break;
+    case 3:
+        host_behav = MADV_WILLNEED;
+        break;
+    case 4:
+        // FreeBSD MADV_DONTNEED preserves contents; Linux MADV_DONTNEED zeros anonymous RAM.
+#if defined(__APPLE__)
+        host_behav = MADV_DONTNEED;
+#elif defined(MADV_COLD)
+        host_behav = MADV_COLD;
+#endif
+        break;
+    default:
+        break;
+    }
+    if (host_behav == -1) {
+        return 0;
+    }
+
+    const VAddr start = Common::AlignDown(raw_addr, page_size);
+    const VAddr end = Common::AlignUp(raw_addr + len, page_size);
+    if (end < start) {
+        *__Error() = POSIX_EINVAL;
+        return -1;
+    }
+    if (madvise(reinterpret_cast<void*>(start), end - start, host_behav) != 0) {
+        *__Error() = errno == ENOMEM ? POSIX_ENOMEM : POSIX_EINVAL;
+        return -1;
+    }
+#elif defined(_WIN32)
+    if (behav == 5) {
+        const VAddr start = Common::AlignUp(raw_addr, 4096ULL);
+        const VAddr end = Common::AlignDown(raw_addr + len, 4096ULL);
+        if (end > start) {
+            VirtualAlloc(reinterpret_cast<void*>(start), end - start, MEM_RESET, PAGE_READWRITE);
+        }
+    }
+#endif
+    return 0;
+}
+
 s32 PS4_SYSV_ABI posix_msync(void* addr, u64 len, s32 flags) {
     LOG_ERROR(Kernel_Vmm, "(STUBBED) called, addr = {}, len = {:#x}, flags = {}", fmt::ptr(addr),
               len, flags);
@@ -1045,6 +1125,8 @@ void RegisterMemory(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("OG4RsDwLguo", "libkernel", 1, "libkernel", posix_munlock);
     LIB_FUNCTION("OG4RsDwLguo", "libScePosix", 1, "libkernel", posix_munlock);
     LIB_FUNCTION("teiItL2boFw", "libkernel", 1, "libkernel", sceKernelReleaseFlexibleMemory);
+    LIB_FUNCTION("Jahsnh4KKkg", "libkernel", 1, "libkernel", posix_madvise);
+    LIB_FUNCTION("Jahsnh4KKkg", "libScePosix", 1, "libkernel", posix_madvise);
     LIB_FUNCTION("tZY4+SZNFhA", "libkernel", 1, "libkernel", posix_msync);
     LIB_FUNCTION("tZY4+SZNFhA", "libScePosix", 1, "libkernel", posix_msync);
 

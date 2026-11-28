@@ -59,6 +59,8 @@ enum OrbisKernelProcessType : s32 {
 
 s32 PS4_SYSV_ABI sceKernelGetProcessType(s32 pid);
 s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* psid);
+s32 PS4_SYSV_ABI sceKernelGetOpenPsIdForSystem(void* psid);
+s32 PS4_SYSV_ABI sceKernelGetIdPs(void* idps);
 
 struct AuthInfoData {
     u64 paid;

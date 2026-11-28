@@ -193,6 +193,7 @@ s32 PS4_SYSV_ABI sceKernelMemoryPoolBatch(const OrbisKernelMemoryPoolBatchEntry*
 s32 PS4_SYSV_ABI sceKernelMemoryPoolGetBlockStats(OrbisKernelMemoryPoolBlockStats* stats, u64 size);
 
 s32 PS4_SYSV_ABI sceKernelMunmap(void* addr, u64 len);
+s32 PS4_SYSV_ABI posix_madvise(void* addr, u64 len, s32 behav);
 
 void RegisterMemory(Core::Loader::SymbolsResolver* sym);
 

@@ -12,12 +12,14 @@
 #include "common/thread.h"
 #include "common/va_ctx.h"
 #include "core/cpu_patches.h"
+#include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/coredump/coredump.h"
 #include "core/libraries/kernel/debug.h"
 #include "core/libraries/kernel/equeue.h"
 #include "core/libraries/kernel/file_system.h"
+#include "core/libraries/kernel/ipc.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -286,10 +288,28 @@ s32 PS4_SYSV_ABI get_authinfo(s32 pid, AuthInfoData* p2) {
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI get_self_auth_info(AuthInfoData* p2) {
+    return get_authinfo(0, p2);
+}
+
+s32 PS4_SYSV_ABI sceKernelGetUtokenUseSoftwagnerForAcmgr() {
+    s32 val = 0;
+    size_t len = sizeof(val);
+    return posix_sysctlbyname("machdep.rcmgr_utoken_use_softwagner", &val, &len, nullptr, 0) == 0
+               ? val
+               : -1;
+}
+
+s32 PS4_SYSV_ABI sceKernelDebugGpuPaDebugIsInProgress() {
+    return 0;
+}
+
 s32 PS4_SYSV_ABI sceKernelGetAppInfo(s32 pid, OrbisKernelAppInfo* app_info) {
-    LOG_WARNING(Lib_Kernel, "(STUBBED) called, pid: {}", pid);
-    if (pid != GLOBAL_PID) {
+    if (pid == 0) {
         return ORBIS_KERNEL_ERROR_EPERM;
+    }
+    if (pid != GLOBAL_PID) {
+        return ORBIS_KERNEL_ERROR_ESRCH;
     }
     if (app_info == nullptr) {
         return ORBIS_OK;
@@ -297,20 +317,31 @@ s32 PS4_SYSV_ABI sceKernelGetAppInfo(s32 pid, OrbisKernelAppInfo* app_info) {
 
     auto& game_info = Common::ElfInfo::Instance();
     *app_info = {};
+    app_info->app_id = 0x60000001;
     app_info->has_param_sfo = 1;
     strncpy(app_info->cusa_name, game_info.GameSerial().data(), 10);
     return ORBIS_OK;
 }
 
+s32 PS4_SYSV_ABI sceKernelSetAppInfo(s32 pid, const OrbisKernelAppInfo* app_info) {
+    if (app_info == nullptr) {
+        return ORBIS_KERNEL_ERROR_EFAULT;
+    }
+    if (pid != GLOBAL_PID) {
+        return ORBIS_KERNEL_ERROR_EPERM;
+    }
+    return ORBIS_OK;
+}
+
 s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* tw, s32 bit,
                                                    s32* result) {
-    LOG_ERROR(Lib_Kernel, "(STUBBED) called, bit {:#x}", bit);
+    LOG_TRACE(Lib_Kernel, "called, bit {:#x}", bit);
     if (!tw || !result) {
         return ORBIS_KERNEL_ERROR_EFAULT;
     }
 
     // Maximum bit value is known to change with new firmwares.
-    if (bit >= 0x3a) {
+    if (static_cast<u32>(bit) >= 0x3a) {
         return ORBIS_KERNEL_ERROR_EINVAL;
     }
 
@@ -321,8 +352,8 @@ s32 PS4_SYSV_ABI sceKernelTitleWorkaroundIsEnabled(OrbisKernelTitleWorkaround* t
 
 s32 PS4_SYSV_ABI sceKernelGetProcessType(s32 pid) {
     LOG_DEBUG(Lib_Kernel, "called, pid: {}", pid);
-    if (pid != GLOBAL_PID && pid != -1 && pid != 0) {
-        return ORBIS_KERNEL_ERROR_ESRCH;
+    if (pid != GLOBAL_PID && pid != -1) {
+        return ORBIS_KERNEL_ERROR_ENOSYS;
     }
     return ORBIS_KERNEL_PROCESS_TYPE_BIG_APP;
 }
@@ -337,10 +368,22 @@ s32 PS4_SYSV_ABI sceKernelGetOpenPsId(void* psid) {
     if (!psid) {
         return POSIX_EINVAL;
     }
-    static constexpr u8 default_psid[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
-    std::memcpy(psid, default_psid, sizeof(default_psid));
+    const auto id = GetPersistentOpenPsId();
+    std::memcpy(psid, id.data(), id.size());
     return ORBIS_OK;
+}
+
+s32 PS4_SYSV_ABI sceKernelGetOpenPsIdForSystem(void* psid) {
+    if (!psid) {
+        return POSIX_EINVAL;
+    }
+    size_t len = 16;
+    return posix_sysctlbyname("machdep.openpsid_for_sys", psid, &len, nullptr, 0);
+}
+
+s32 PS4_SYSV_ABI sceKernelGetIdPs(void* idps) {
+    size_t len = 16;
+    return posix_sysctlbyname("machdep.idps", idps, &len, nullptr, 0);
 }
 
 // Nominally: long sysconf(int name);
@@ -568,6 +611,44 @@ s32 PS4_SYSV_ABI posix_sysctlbyname(const char* name, void* oldp, size_t* oldlen
         return CopyOutSysctl(oldp, oldlenp, &floatingpt, sizeof(floatingpt));
     }
 
+    if (name_view == "machdep.openpsid") {
+        const auto id = GetPersistentOpenPsId();
+        return CopyOutSysctl(oldp, oldlenp, id.data(), id.size());
+    }
+
+    if (name_view == "machdep.openpsid_for_sys") {
+        if (!EmulatorSettings.IsDevKit()) {
+            SetPosixErrno(EPERM);
+            return -1;
+        }
+        const auto id = GetPersistentOpenPsId();
+        return CopyOutSysctl(oldp, oldlenp, id.data(), id.size());
+    }
+
+    if (name_view == "machdep.idps") {
+        if (!EmulatorSettings.IsDevKit()) {
+            SetPosixErrno(EPERM);
+            return -1;
+        }
+        const auto idps = GetPersistentDevKitIdPs(Libraries::Kernel::sceKernelIsNeoMode() != 0);
+        return CopyOutSysctl(oldp, oldlenp, idps.data(), idps.size());
+    }
+
+    if (name_view == "kern.smp.cpus") {
+        const s32 cpus = Common::ElfInfo::Instance().GetPSFAttributes().seven_cpu_mode ? 7 : 6;
+        return CopyOutSysctl(oldp, oldlenp, &cpus, sizeof(cpus));
+    }
+
+    if (name_view == "kern.ostype") {
+        static constexpr char ostype[] = "FreeBSD";
+        return CopyOutSysctl(oldp, oldlenp, ostype, sizeof(ostype));
+    }
+
+    if (name_view == "kern.osrelease") {
+        static constexpr char osrelease[] = "9.0-RELEASE";
+        return CopyOutSysctl(oldp, oldlenp, osrelease, sizeof(osrelease));
+    }
+
     LOG_WARNING(Lib_Kernel, "sysctlbyname: unknown name '{}'", name);
     SetPosixErrno(ENOENT);
     return -1;
@@ -793,6 +874,7 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     Libraries::Kernel::RegisterMemory(sym);
     Libraries::Kernel::RegisterEventQueue(sym);
     Libraries::Kernel::RegisterProcess(sym);
+    Libraries::Kernel::RegisterIpc(sym);
     Libraries::Kernel::RegisterException(sym);
     Libraries::Kernel::RegisterAio(sym);
     Libraries::Kernel::RegisterDebug(sym);
@@ -805,7 +887,12 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("YeU23Szo3BM", "libkernel", 1, "libkernel", sceKernelGetAllowedSdkVersionOnSystem);
     LIB_FUNCTION("Mv1zUObHvXI", "libkernel", 1, "libkernel", sceKernelGetSystemSwVersion);
     LIB_FUNCTION("igMefp4SAv0", "libkernel", 1, "libkernel", get_authinfo);
+    LIB_FUNCTION("p2xgfB-30g8", "libkernel", 1, "libkernel", get_self_auth_info);
+    LIB_FUNCTION("b0cryxaTM4k", "libkernel", 1, "libkernel",
+                 sceKernelGetUtokenUseSoftwagnerForAcmgr);
+    LIB_FUNCTION("+iVwFsjXaFQ", "libkernel", 1, "libkernel", sceKernelDebugGpuPaDebugIsInProgress);
     LIB_FUNCTION("G-MYv5erXaU", "libkernel", 1, "libkernel", sceKernelGetAppInfo);
+    LIB_FUNCTION("CkomU+GYCQ8", "libkernel", 1, "libkernel", sceKernelSetAppInfo);
     LIB_FUNCTION("1yca4VvfcNA", "libkernel", 1, "libkernel", sceKernelTitleWorkaroundIsEnabled);
     LIB_FUNCTION("+g+UP8Pyfmo", "libkernel", 1, "libkernel", sceKernelGetProcessType);
     LIB_FUNCTION("PfccT7qURYE", "libkernel", 1, "libkernel", kernel_ioctl);
@@ -876,6 +963,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("FJmglmTMdr4", "libkernel", 1, "libkernel", getargv);
     LIB_FUNCTION("DLORcroUqbc", "libkernel", 1, "libkernel", sceKernelGetOpenPsId);
     LIB_FUNCTION("DLORcroUqbc", "libSceOpenPsId", 1, "libkernel", sceKernelGetOpenPsId);
+    LIB_FUNCTION("ul57hvm6mBc", "libkernel", 1, "libkernel", sceKernelGetOpenPsIdForSystem);
+    LIB_FUNCTION("lZG-WlKxRqQ", "libkernel", 1, "libkernel", sceKernelGetIdPs);
 }
 
 } // namespace Libraries::Kernel
